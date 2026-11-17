@@ -15,6 +15,7 @@ export interface AuthUser {
   id: string;
   username: string;
   email: string;
+  isEmailVerified: boolean;
   role: UserRole;
   avatarUrl: string | null;
   profileTheme: string;
@@ -37,6 +38,17 @@ export interface RegisterPayload {
   password: string;
 }
 
+export interface VerifyEmailPayload {
+  email: string;
+  code: string;
+}
+
+export interface ResetPasswordPayload {
+  email: string;
+  code: string;
+  newPassword: string;
+}
+
 export interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
@@ -44,6 +56,10 @@ export interface AuthContextValue {
   clearAuthError: () => void;
   login: (payload: LoginPayload) => Promise<AuthUser>;
   register: (payload: RegisterPayload) => Promise<AuthUser>;
+  verifyEmail: (payload: VerifyEmailPayload) => Promise<AuthUser>;
+  resendVerification: (email: string) => Promise<string>;
+  forgotPassword: (email: string) => Promise<string>;
+  resetPassword: (payload: ResetPasswordPayload) => Promise<string>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -118,6 +134,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const verifyEmail = useCallback(
+    async (payload: VerifyEmailPayload): Promise<AuthUser> => {
+      const response = await apiClient.post<AuthUser>(
+        '/auth/verify-email',
+        payload,
+      );
+      setUser(response.data);
+      return response.data;
+    },
+    [],
+  );
+
+  const resendVerification = useCallback(
+    async (email: string): Promise<string> => {
+      const response = await apiClient.post<{ message: string }>(
+        '/auth/resend-verification',
+        { email },
+      );
+      return response.data.message;
+    },
+    [],
+  );
+
+  const forgotPassword = useCallback(async (email: string): Promise<string> => {
+    const response = await apiClient.post<{ message: string }>(
+      '/auth/forgot-password',
+      { email },
+    );
+    return response.data.message;
+  }, []);
+
+  const resetPassword = useCallback(
+    async (payload: ResetPasswordPayload): Promise<string> => {
+      const response = await apiClient.post<{ message: string }>(
+        '/auth/reset-password',
+        payload,
+      );
+      setUser(null);
+      return response.data.message;
+    },
+    [],
+  );
+
   const logout = useCallback(async (): Promise<void> => {
     try {
       await apiClient.post('/auth/logout');
@@ -134,6 +193,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearAuthError,
       login,
       register,
+      verifyEmail,
+      resendVerification,
+      forgotPassword,
+      resetPassword,
       logout,
       refreshProfile,
     }),
@@ -144,6 +207,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearAuthError,
       login,
       register,
+      verifyEmail,
+      resendVerification,
+      forgotPassword,
+      resetPassword,
       logout,
       refreshProfile,
     ],

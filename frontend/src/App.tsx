@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Flame,
   Image,
   LogIn,
   LogOut,
+  MailCheck,
   Search,
   Sparkles,
   Trophy,
@@ -30,6 +32,7 @@ export function App() {
   const [suggestions, setSuggestions] = useState<AnimeSuggestion[]>([]);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
+  const [authModalEmail, setAuthModalEmail] = useState<string>('');
 
   useEffect(() => {
     if (authError) {
@@ -38,8 +41,9 @@ export function App() {
     }
   }, [authError]);
 
-  const openAuthModal = (tab: AuthTab) => {
+  const openAuthModal = (tab: AuthTab, targetEmail = '') => {
     setAuthModalTab(tab);
+    setAuthModalEmail(targetEmail);
     setAuthModalOpen(true);
   };
 
@@ -114,6 +118,27 @@ export function App() {
         </div>
       </header>
 
+      {user && !user.isEmailVerified && (
+        <div className="verify-email-banner" role="region" aria-label="Email verification notice">
+          <div className="verify-email-banner-text">
+            <AlertTriangle size={18} />
+            <span>
+              Your email address (<strong>{user.email}</strong>) is not verified
+              yet. Verify your email to secure your account and unlock full
+              recovery features.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="verify-email-banner-btn"
+            onClick={() => openAuthModal('verify-email', user.email)}
+          >
+            <MailCheck size={15} />
+            Verify Email
+          </button>
+        </div>
+      )}
+
       <main className="arena">
         <section className="mode-selector">
           <button
@@ -178,6 +203,7 @@ export function App() {
       <AuthModal
         isOpen={authModalOpen}
         initialTab={authModalTab}
+        initialEmail={authModalEmail}
         onClose={() => setAuthModalOpen(false)}
       />
     </div>

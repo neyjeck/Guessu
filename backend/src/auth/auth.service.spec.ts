@@ -1,4 +1,9 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -6,12 +11,14 @@ import { Role, User } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { instanceToPlain } from 'class-transformer';
 import { Response } from 'express';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { UserResponseEntity } from '../users/entities/user-response.entity';
 import { UsersService } from '../users/users.service';
 import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './auth.constants';
 import { AuthService } from './auth.service';
+import { OtpService } from './otp.service';
 
 describe('AuthService', () => {
   let authService: AuthService;
@@ -26,14 +33,23 @@ describe('AuthService', () => {
   let usersService: {
     findByLogin: jest.Mock;
     findById: jest.Mock;
+    findByEmail: jest.Mock;
   };
   let redisService: {
+    getClient: jest.Mock;
     setRefreshTokenSession: jest.Mock;
     rotateRefreshTokenSession: jest.Mock;
     revokeRefreshTokenSession: jest.Mock;
     revokeAllUserSessions: jest.Mock;
   };
+  let mailService: {
+    sendVerificationOtp: jest.Mock;
+    sendPasswordResetOtp: jest.Mock;
+    sendGoogleOAuthReminder: jest.Mock;
+  };
+  let otpService: OtpService;
   let jwtService: JwtService;
+  let redisStore: Map<string, string>;
 
   const createMockResponse = (): Response => {
     const res = {
@@ -49,6 +65,7 @@ describe('AuthService', () => {
     email: 'otaku@example.com',
     passwordHash: 'hashed-password',
     googleId: null,
+    isEmailVerified: false,
     role: Role.USER,
     avatarUrl: null,
     profileTheme: 'default',
@@ -62,6 +79,23 @@ describe('AuthService', () => {
   });
 
   beforeEach(async () => {
+    redisStore = new Map<string, string>();
+    const mockRedisClient = {
+      get: jest.fn(async (key: string) => redisStore.get(key) ?? null),
+      set: jest.fn(async (key: string, val: string) => {
+        redisStore.set(key, val);
+        return 'OK';
+      }),
+      del: jest.fn(async (...keys: string[]) => {
+        let count = 0;
+        for (const k of keys) {
+          if (redisStore.delete(k)) count++;
+        }
+        return count;
+      }),
+      ttl: jest.fn(async (key: string) => (redisStore.has(key) ? 60 : -2)),
+    };
+
     prismaService = {
       user: {
         findFirst: jest.fn(),
@@ -74,18 +108,27 @@ describe('AuthService', () => {
     usersService = {
       findByLogin: jest.fn(),
       findById: jest.fn(),
+      findByEmail: jest.fn(),
     };
 
     redisService = {
+      getClient: jest.fn(() => mockRedisClient),
       setRefreshTokenSession: jest.fn().mockResolvedValue(undefined),
       rotateRefreshTokenSession: jest.fn().mockResolvedValue(true),
       revokeRefreshTokenSession: jest.fn().mockResolvedValue(undefined),
       revokeAllUserSessions: jest.fn().mockResolvedValue(undefined),
     };
 
+    mailService = {
+      sendVerificationOtp: jest.fn().mockResolvedValue(undefined),
+      sendPasswordResetOtp: jest.fn().mockResolvedValue(undefined),
+      sendGoogleOAuthReminder: jest.fn().mockResolvedValue(undefined),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
+        OtpService,
         JwtService,
         {
           provide: PrismaService,
@@ -100,6 +143,10 @@ describe('AuthService', () => {
           useValue: redisService,
         },
         {
+          provide: MailService,
+          useValue: mailService,
+        },
+        {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string, fallback?: string) => {
@@ -107,6 +154,7 @@ describe('AuthService', () => {
                 NODE_ENV: 'test',
                 JWT_ACCESS_SECRET: 'test-access-secret-min-32-chars-long',
                 JWT_REFRESH_SECRET: 'test-refresh-secret-min-32-chars-long',
+                OTP_HASH_SECRET: 'test-otp-hash-secret-min-32-chars-long',
               };
               return values[key] ?? fallback;
             }),
@@ -116,20 +164,31 @@ describe('AuthService', () => {
     }).compile();
 
     authService = moduleRef.get(AuthService);
+    otpService = moduleRef.get(OtpService);
     jwtService = moduleRef.get(JwtService);
     await authService.onModuleInit();
   });
 
   describe('register', () => {
-    it('hashes password with argon2id, initializes Redis session, sets HttpOnly cookies, and excludes passwordHash', async () => {
+    it('hashes password with argon2id, initializes Redis session, sets HttpOnly cookies, sends verification OTP, and excludes passwordHash', async () => {
       const res = createMockResponse();
       prismaService.user.findFirst.mockResolvedValue(null);
       prismaService.user.create.mockImplementation(
-        async ({ data }: { data: { username: string; email: string; passwordHash: string } }) =>
+        async ({
+          data,
+        }: {
+          data: {
+            username: string;
+            email: string;
+            passwordHash: string;
+            isEmailVerified: boolean;
+          };
+        }) =>
           makeMockUser({
             username: data.username,
             email: data.email,
             passwordHash: data.passwordHash,
+            isEmailVerified: data.isEmailVerified,
           }),
       );
 
@@ -145,6 +204,7 @@ describe('AuthService', () => {
       expect(result).toBeInstanceOf(UserResponseEntity);
       expect(result.username).toBe('otaku_detective');
       expect(result.email).toBe('otaku@example.com');
+      expect(result.isEmailVerified).toBe(false);
 
       const createArgs = prismaService.user.create.mock.calls[0][0] as {
         data: { passwordHash: string };
@@ -158,6 +218,11 @@ describe('AuthService', () => {
         'user-uuid-1',
         expect.any(String),
         RedisService.REFRESH_TOKEN_TTL_SECONDS,
+      );
+      expect(mailService.sendVerificationOtp).toHaveBeenCalledWith(
+        'otaku@example.com',
+        'otaku_detective',
+        expect.stringMatching(/^\d{6}$/),
       );
 
       expect(res.cookie).toHaveBeenCalledTimes(2);
@@ -193,6 +258,126 @@ describe('AuthService', () => {
 
       expect(prismaService.user.create).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('verifyEmail & OTP security', () => {
+    it('verifies valid 6-digit OTP, marks user verified, and deletes OTP from Redis', async () => {
+      let sentCode = '';
+      mailService.sendVerificationOtp.mockImplementation(
+        async (_email: string, _username: string, code: string) => {
+          sentCode = code;
+        },
+      );
+
+      const user = makeMockUser({ isEmailVerified: false });
+      usersService.findByEmail.mockResolvedValue(user);
+      prismaService.user.update.mockResolvedValue({
+        ...user,
+        isEmailVerified: true,
+      });
+
+      await authService.resendVerification({ email: user.email });
+      expect(sentCode).toMatch(/^\d{6}$/);
+
+      const verified = await authService.verifyEmail({
+        email: user.email,
+        code: sentCode,
+      });
+
+      expect(verified.isEmailVerified).toBe(true);
+      expect(redisStore.has(`otp:verify:${user.email}`)).toBe(false);
+    });
+
+    it('invalidates OTP after 3 failed verification attempts', async () => {
+      let sentCode = '';
+      mailService.sendVerificationOtp.mockImplementation(
+        async (_email: string, _username: string, code: string) => {
+          sentCode = code;
+        },
+      );
+
+      const user = makeMockUser({ isEmailVerified: false });
+      usersService.findByEmail.mockResolvedValue(user);
+
+      await authService.resendVerification({ email: user.email });
+      const wrongCode = sentCode === '111111' ? '222222' : '111111';
+
+      await expect(
+        authService.verifyEmail({ email: user.email, code: wrongCode }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        authService.verifyEmail({ email: user.email, code: wrongCode }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        authService.verifyEmail({ email: user.email, code: wrongCode }),
+      ).rejects.toThrow(/invalidated/i);
+
+      expect(redisStore.has(`otp:verify:${user.email}`)).toBe(false);
+    });
+
+    it('rolls back OTP and cooldown keys in Redis if SMTP fails (Atomic Delivery Guarantee)', async () => {
+      mailService.sendVerificationOtp.mockRejectedValueOnce(
+        new Error('SMTP connection refused'),
+      );
+
+      const user = makeMockUser({ isEmailVerified: false });
+      usersService.findByEmail.mockResolvedValue(user);
+
+      await expect(
+        authService.resendVerification({ email: user.email }),
+      ).rejects.toThrow(ServiceUnavailableException);
+
+      expect(redisStore.has(`otp:verify:${user.email}`)).toBe(false);
+      expect(redisStore.has(`otp_cooldown:verify:${user.email}`)).toBe(false);
+    });
+  });
+
+  describe('forgotPassword & resetPassword', () => {
+    it('returns generic 200 message for non-existent email (anti-enumeration)', async () => {
+      usersService.findByEmail.mockResolvedValue(null);
+
+      const res = await authService.forgotPassword({
+        email: 'unknown@example.com',
+      });
+
+      expect(res).toEqual({
+        message:
+          'If an account with that email exists, a verification code has been sent.',
+      });
+      expect(mailService.sendPasswordResetOtp).not.toHaveBeenCalled();
+    });
+
+    it('resets password with valid OTP and revokes all active Redis refresh sessions', async () => {
+      let resetCode = '';
+      mailService.sendPasswordResetOtp.mockImplementation(
+        async (_email: string, _username: string, code: string) => {
+          resetCode = code;
+        },
+      );
+
+      const user = makeMockUser();
+      usersService.findByEmail.mockResolvedValue(user);
+      prismaService.user.update.mockResolvedValue(user);
+
+      await authService.forgotPassword({ email: user.email });
+      expect(resetCode).toMatch(/^\d{6}$/);
+
+      const result = await authService.resetPassword({
+        email: user.email,
+        code: resetCode,
+        newPassword: 'NewSecurePassword123',
+      });
+
+      expect(result.message).toContain('Password has been reset successfully');
+      expect(prismaService.user.update).toHaveBeenCalledWith({
+        where: { id: user.id },
+        data: {
+          passwordHash: expect.stringMatching(/^\$argon2id\$/),
+          isEmailVerified: true,
+        },
+      });
+      expect(redisService.revokeAllUserSessions).toHaveBeenCalledWith(user.id);
     });
   });
 
@@ -273,6 +458,7 @@ describe('AuthService', () => {
     it('returns existing user matched by googleId', async () => {
       const existing = makeMockUser({
         googleId: 'google-123',
+        isEmailVerified: true,
         avatarUrl: 'https://example.com/avatar.png',
       });
       prismaService.user.findUnique.mockResolvedValueOnce(existing);
@@ -293,6 +479,7 @@ describe('AuthService', () => {
       const localUser = makeMockUser({ googleId: null, avatarUrl: null });
       const linkedUser = makeMockUser({
         googleId: 'google-123',
+        isEmailVerified: true,
         avatarUrl: 'https://example.com/google.png',
       });
 
@@ -314,6 +501,7 @@ describe('AuthService', () => {
         data: {
           googleId: 'google-123',
           avatarUrl: 'https://example.com/google.png',
+          isEmailVerified: true,
         },
       });
       expect(user).toBe(linkedUser);
@@ -333,11 +521,11 @@ describe('AuthService', () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('creates a new OAuth user with sanitized unique username', async () => {
+    it('creates a new OAuth user with sanitized unique username and isEmailVerified=true', async () => {
       prismaService.user.findUnique
-        .mockResolvedValueOnce(null) // by googleId
-        .mockResolvedValueOnce(null) // by email
-        .mockResolvedValueOnce(null); // username availability check
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
 
       prismaService.user.create.mockImplementation(
         async ({
@@ -348,6 +536,7 @@ describe('AuthService', () => {
             email: string;
             googleId: string;
             passwordHash: null;
+            isEmailVerified: boolean;
             avatarUrl: string | null;
           };
         }) => makeMockUser(data),
@@ -365,6 +554,7 @@ describe('AuthService', () => {
       expect(user.email).toBe('new.user@example.com');
       expect(user.googleId).toBe('google-999');
       expect(user.passwordHash).toBeNull();
+      expect(user.isEmailVerified).toBe(true);
     });
   });
 

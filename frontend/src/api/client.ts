@@ -20,6 +20,10 @@ const NON_RETRYABLE_AUTH_PATHS = [
   '/auth/register',
   '/auth/refresh',
   '/auth/logout',
+  '/auth/verify-email',
+  '/auth/resend-verification',
+  '/auth/forgot-password',
+  '/auth/reset-password',
 ];
 
 function isNonRetryableAuthEndpoint(url?: string): boolean {
