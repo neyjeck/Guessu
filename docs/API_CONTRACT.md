@@ -41,6 +41,7 @@ Authentication in **Anime Guesser** uses a dual-token **JWT + Redis Session** st
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "username": "otaku_detective",
   "email": "challenger@example.com",
+  "isEmailVerified": false,
   "role": "USER",
   "avatarUrl": null,
   "profileTheme": "default",
@@ -53,7 +54,7 @@ Authentication in **Anime Guesser** uses a dual-token **JWT + Redis Session** st
 }
 ```
 
-> **Note:** `passwordHash` is decorated with `@Exclude()` and is never serialized in any API response.
+> **Note:** `passwordHash` and `googleId` are decorated with `@Exclude()` and are never serialized in any API response.
 
 ---
 
@@ -166,6 +167,93 @@ Handles the Google OAuth 2.0 callback:
   - `GOOGLE_CLIENT_SECRET`
   - `GOOGLE_CALLBACK_URL` (e.g. `http://localhost:3000/api/auth/google/callback`)
   - `FRONTEND_URL` (e.g. `http://localhost:5173`)
+
+---
+
+### `POST /api/auth/verify-email`
+
+Validates a 6-digit email verification OTP code against Redis (`otp:verify:<email>`), marks `User.isEmailVerified = true`, deletes the OTP from Redis, and returns the updated `UserResponseEntity`.
+
+- **Rate Limit:** 3 requests / 60 seconds per IP.
+- **Brute-Force Protection:** After 3 failed verification attempts, the OTP key in Redis is immediately invalidated and deleted.
+- **Request Body (`VerifyEmailDto`):**
+  ```json
+  {
+    "email": "challenger@example.com",
+    "code": "482910"
+  }
+  ```
+- **Responses:**
+  - `200 OK`: Returns updated `UserResponseEntity` with `"isEmailVerified": true`.
+  - `400 Bad Request`: Invalid, expired, or locked-out verification code.
+  - `429 Too Many Requests`: Rate limit exceeded.
+
+---
+
+### `POST /api/auth/resend-verification`
+
+Generates a new 6-digit verification OTP (`crypto.randomInt(100000, 999999)`), stores its SHA-256 hash in Redis (`otp:verify:<email>`, 10m TTL) with a 60-second resend cooldown (`otp_cooldown:verify:<email>`, 60s TTL), and dispatches the verification email via Nodemailer SMTP.
+
+- **Rate Limit:** 3 requests / 60 seconds per IP.
+- **Atomic Delivery Guarantee:** If `MailService` fails to send the email via SMTP, both the OTP and cooldown keys are immediately deleted from Redis and a `503 Service Unavailable` response is returned so the user can retry immediately.
+- **Request Body (`ResendVerificationDto`):**
+  ```json
+  {
+    "email": "challenger@example.com"
+  }
+  ```
+- **Responses:**
+  - `200 OK`: `{ "message": "Verification code has been sent to your email." }`
+  - `400 Bad Request`: Account not found or already verified.
+  - `429 Too Many Requests`: Cooldown active (60s) or IP rate limit exceeded.
+  - `503 Service Unavailable`: SMTP delivery failure.
+
+---
+
+### `POST /api/auth/forgot-password`
+
+Initiates the password reset flow.
+
+- **Rate Limit:** 3 requests / 60 seconds per IP.
+- **Anti-Enumeration Rule:** Always returns `200 OK` with `{ "message": "If an account with that email exists, a verification code has been sent." }` regardless of whether the email exists in PostgreSQL.
+- **Behavior:**
+  - If a local account exists (`passwordHash !== null`), generates a 6-digit reset OTP (`otp:reset:<email>`, 10m TTL, 60s cooldown) and sends the password reset email via SMTP.
+  - If a Google OAuth-only account exists (`passwordHash === null`), sends a reminder email to sign in with Google.
+- **Request Body (`ForgotPasswordDto`):**
+  ```json
+  {
+    "email": "challenger@example.com"
+  }
+  ```
+
+---
+
+### `POST /api/auth/reset-password`
+
+Verifies the 6-digit password reset OTP (`otp:reset:<email>`), hashes `newPassword` with `argon2id`, updates `User.passwordHash` and `User.isEmailVerified = true`, deletes the OTP from Redis, and **revokes all active refresh sessions (`refresh_token:<userId>:*`) in Redis** to force logout across all devices.
+
+- **Rate Limit:** 3 requests / 60 seconds per IP.
+- **Request Body (`ResetPasswordDto`):**
+  ```json
+  {
+    "email": "challenger@example.com",
+    "code": "839201",
+    "newPassword": "NewSecurePassword123"
+  }
+  ```
+- **Responses:**
+  - `200 OK`: `{ "message": "Password has been reset successfully. Please sign in with your new password." }`
+  - `400 Bad Request`: Invalid/expired OTP, 3-attempt lockout triggered, or weak password.
+  - `429 Too Many Requests`: Rate limit exceeded.
+
+- **Required SMTP Environment Variables (`backend/.env`):**
+  - `SMTP_HOST` (e.g. `smtp.gmail.com`)
+  - `SMTP_PORT` (e.g. `587` or `465`)
+  - `SMTP_SECURE` (`true` for 465, `false` for 587)
+  - `SMTP_USER`
+  - `SMTP_PASS`
+  - `SMTP_FROM` (e.g. `"Anime Guesser <no-reply@animeguesser.local>"`)
+  - `OTP_HASH_SECRET`
 
 ---
 

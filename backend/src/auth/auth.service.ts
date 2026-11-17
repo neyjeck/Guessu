@@ -1,7 +1,10 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   OnModuleInit,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -10,6 +13,7 @@ import { User } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomInt, randomUUID } from 'crypto';
 import { CookieOptions, Response } from 'express';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { UserResponseEntity } from '../users/entities/user-response.entity';
@@ -20,8 +24,13 @@ import {
   REFRESH_TOKEN_COOKIE,
   REFRESH_TOKEN_MAX_AGE_MS,
 } from './auth.constants';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { OtpService } from './otp.service';
 import { AccessTokenPayload } from './strategies/jwt.strategy';
 
 export interface RefreshTokenPayload {
@@ -45,6 +54,7 @@ export interface GoogleUserProfile {
 
 @Injectable()
 export class AuthService implements OnModuleInit {
+  private readonly logger = new Logger(AuthService.name);
   private dummyPasswordHash = '';
 
   constructor(
@@ -53,6 +63,8 @@ export class AuthService implements OnModuleInit {
     private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
+    private readonly otpService: OtpService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -90,11 +102,124 @@ export class AuthService implements OnModuleInit {
         username: trimmedUsername,
         email: normalizedEmail,
         passwordHash,
+        isEmailVerified: false,
       },
     });
 
     await this.createSessionAndAttachCookies(user, res);
+
+    try {
+      await this.otpService.issueAndSendOtp('verify', user.email, (code) =>
+        this.mailService.sendVerificationOtp(user.email, user.username, code),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Automatic verification email dispatch failed for ${user.email}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     return new UserResponseEntity(user);
+  }
+
+  async verifyEmail(dto: VerifyEmailDto): Promise<UserResponseEntity> {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (!user) {
+      throw new BadRequestException('Invalid email or verification code');
+    }
+
+    if (user.isEmailVerified) {
+      return new UserResponseEntity(user);
+    }
+
+    await this.otpService.verifyOtp('verify', normalizedEmail, dto.code);
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isEmailVerified: true },
+    });
+
+    return new UserResponseEntity(updatedUser);
+  }
+
+  async resendVerification(
+    dto: ResendVerificationDto,
+  ): Promise<{ message: string }> {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (!user) {
+      throw new BadRequestException('Account not found for this email address');
+    }
+
+    if (user.isEmailVerified) {
+      throw new BadRequestException('Email address is already verified');
+    }
+
+    await this.otpService.issueAndSendOtp('verify', user.email, (code) =>
+      this.mailService.sendVerificationOtp(user.email, user.username, code),
+    );
+
+    return { message: 'Verification code has been sent to your email.' };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    const genericMessage =
+      'If an account with that email exists, a verification code has been sent.';
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const user = await this.usersService.findByEmail(normalizedEmail);
+
+    if (!user) {
+      return { message: genericMessage };
+    }
+
+    if (user.passwordHash === null) {
+      try {
+        await this.mailService.sendGoogleOAuthReminder(
+          user.email,
+          user.username,
+        );
+      } catch {
+        throw new ServiceUnavailableException(
+          'Unable to send email via SMTP. Please try again later.',
+        );
+      }
+      return { message: genericMessage };
+    }
+
+    await this.otpService.issueAndSendOtp('reset', user.email, (code) =>
+      this.mailService.sendPasswordResetOtp(user.email, user.username, code),
+    );
+
+    return { message: genericMessage };
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (!user) {
+      throw new BadRequestException('Invalid email or verification code');
+    }
+
+    await this.otpService.verifyOtp('reset', normalizedEmail, dto.code);
+
+    const passwordHash = await argon2.hash(dto.newPassword, {
+      type: argon2.argon2id,
+    });
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        isEmailVerified: true,
+      },
+    });
+
+    await this.redisService.revokeAllUserSessions(user.id);
+
+    return {
+      message:
+        'Password has been reset successfully. Please sign in with your new password.',
+    };
   }
 
   async login(dto: LoginDto, res: Response): Promise<UserResponseEntity> {
@@ -127,10 +252,16 @@ export class AuthService implements OnModuleInit {
     });
 
     if (existingByGoogleId) {
-      if (!existingByGoogleId.avatarUrl && profile.avatarUrl) {
+      if (
+        (!existingByGoogleId.avatarUrl && profile.avatarUrl) ||
+        !existingByGoogleId.isEmailVerified
+      ) {
         return this.prisma.user.update({
           where: { id: existingByGoogleId.id },
-          data: { avatarUrl: profile.avatarUrl },
+          data: {
+            avatarUrl: existingByGoogleId.avatarUrl ?? profile.avatarUrl,
+            isEmailVerified: true,
+          },
         });
       }
       return existingByGoogleId;
@@ -153,6 +284,7 @@ export class AuthService implements OnModuleInit {
         data: {
           googleId: profile.googleId,
           avatarUrl: existingByEmail.avatarUrl ?? profile.avatarUrl,
+          isEmailVerified: true,
         },
       });
     }
@@ -167,6 +299,7 @@ export class AuthService implements OnModuleInit {
         email: normalizedEmail,
         googleId: profile.googleId,
         passwordHash: null,
+        isEmailVerified: true,
         avatarUrl: profile.avatarUrl,
       },
     });

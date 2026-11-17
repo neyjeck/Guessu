@@ -12,6 +12,7 @@ export class UserResponseEntity implements User {
   @Exclude()
   googleId!: string | null;
 
+  isEmailVerified!: boolean;
   role!: Role;
   avatarUrl!: string | null;
   profileTheme!: string;

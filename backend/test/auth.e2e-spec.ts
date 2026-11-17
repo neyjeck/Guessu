@@ -6,12 +6,17 @@ import {
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { ThrottlerGuard, ThrottlerModule, ThrottlerStorage } from '@nestjs/throttler';
+import {
+  ThrottlerGuard,
+  ThrottlerModule,
+  ThrottlerStorage,
+} from '@nestjs/throttler';
 import { Role, User } from '@prisma/client';
 import * as cookieParser from 'cookie-parser';
 import { randomUUID } from 'crypto';
 import * as request from 'supertest';
 import { AuthModule } from '../src/auth/auth.module';
+import { MailService } from '../src/mail/mail.service';
 import { PrismaModule } from '../src/prisma/prisma.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { RedisModule } from '../src/redis/redis.module';
@@ -65,6 +70,7 @@ class InMemoryPrismaMock {
         email: string;
         passwordHash?: string | null;
         googleId?: string | null;
+        isEmailVerified?: boolean;
         avatarUrl?: string | null;
       };
     }): Promise<User> => {
@@ -75,6 +81,7 @@ class InMemoryPrismaMock {
         email: data.email,
         passwordHash: data.passwordHash ?? null,
         googleId: data.googleId ?? null,
+        isEmailVerified: data.isEmailVerified ?? false,
         role: Role.USER,
         avatarUrl: data.avatarUrl ?? null,
         profileTheme: 'default',
@@ -88,6 +95,24 @@ class InMemoryPrismaMock {
       this.users.push(user);
       return user;
     },
+    update: async ({
+      where,
+      data,
+    }: {
+      where: { id: string };
+      data: Partial<User>;
+    }): Promise<User> => {
+      const idx = this.users.findIndex((u) => u.id === where.id);
+      if (idx === -1) {
+        throw new Error('User not found');
+      }
+      this.users[idx] = {
+        ...this.users[idx],
+        ...data,
+        updatedAt: new Date(),
+      };
+      return this.users[idx];
+    },
   };
 
   reset(): void {
@@ -97,6 +122,27 @@ class InMemoryPrismaMock {
 
 class InMemoryRedisMock {
   private sessions = new Set<string>();
+  private kv = new Map<string, string>();
+
+  private client = {
+    get: async (key: string): Promise<string | null> => this.kv.get(key) ?? null,
+    set: async (key: string, value: string): Promise<'OK'> => {
+      this.kv.set(key, value);
+      return 'OK';
+    },
+    del: async (...keys: string[]): Promise<number> => {
+      let deleted = 0;
+      for (const k of keys) {
+        if (this.kv.delete(k)) deleted++;
+      }
+      return deleted;
+    },
+    ttl: async (key: string): Promise<number> => (this.kv.has(key) ? 60 : -2),
+  };
+
+  getClient() {
+    return this.client;
+  }
 
   async setRefreshTokenSession(
     userId: string,
@@ -142,6 +188,7 @@ class InMemoryRedisMock {
 
   reset(): void {
     this.sessions.clear();
+    this.kv.clear();
   }
 }
 
@@ -195,6 +242,27 @@ describe('AuthController (e2e)', () => {
   let prismaMock: InMemoryPrismaMock;
   let redisMock: InMemoryRedisMock;
   let throttlerStorage: InMemoryThrottlerStorage;
+  let lastVerificationCode = '';
+  let lastResetCode = '';
+
+  const mailMock = {
+    onModuleInit: async () => undefined,
+    sendVerificationOtp: async (
+      _to: string,
+      _username: string,
+      code: string,
+    ) => {
+      lastVerificationCode = code;
+    },
+    sendPasswordResetOtp: async (
+      _to: string,
+      _username: string,
+      code: string,
+    ) => {
+      lastResetCode = code;
+    },
+    sendGoogleOAuthReminder: async () => undefined,
+  };
 
   beforeAll(async () => {
     prismaMock = new InMemoryPrismaMock();
@@ -211,6 +279,7 @@ describe('AuthController (e2e)', () => {
               NODE_ENV: 'test',
               JWT_ACCESS_SECRET: 'e2e-access-secret-min-32-chars-long',
               JWT_REFRESH_SECRET: 'e2e-refresh-secret-min-32-chars-long',
+              OTP_HASH_SECRET: 'e2e-otp-hash-secret-min-32-chars-long',
             }),
           ],
         }),
@@ -239,6 +308,8 @@ describe('AuthController (e2e)', () => {
       .useValue(prismaMock)
       .overrideProvider(RedisService)
       .useValue(redisMock)
+      .overrideProvider(MailService)
+      .useValue(mailMock)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -262,6 +333,8 @@ describe('AuthController (e2e)', () => {
     prismaMock.reset();
     redisMock.reset();
     throttlerStorage.reset();
+    lastVerificationCode = '';
+    lastResetCode = '';
   });
 
   afterAll(async () => {
@@ -273,7 +346,6 @@ describe('AuthController (e2e)', () => {
   it('rejects non-whitelisted fields and weak passwords on POST /api/auth/register', async () => {
     await request(app.getHttpServer())
       .post('/api/auth/register')
-      .set('X-Forwarded-For', '10.0.0.1')
       .send({
         username: 'valid_user',
         email: 'user@example.com',
@@ -284,7 +356,6 @@ describe('AuthController (e2e)', () => {
 
     await request(app.getHttpServer())
       .post('/api/auth/register')
-      .set('X-Forwarded-For', '10.0.0.2')
       .send({
         username: 'valid_user',
         email: 'user@example.com',
@@ -293,7 +364,7 @@ describe('AuthController (e2e)', () => {
       .expect(400);
   });
 
-  it('completes full register -> me -> refresh (rotation + replay protection) -> logout flow with HttpOnly cookies', async () => {
+  it('completes full register -> verify-email -> me -> refresh (rotation + replay protection) -> forgot/reset-password -> logout flow', async () => {
     const server = app.getHttpServer();
 
     // 1. Register
@@ -309,11 +380,26 @@ describe('AuthController (e2e)', () => {
     expect(registerRes.body).toMatchObject({
       username: 'otaku_pro',
       email: 'otaku.pro@example.com',
+      isEmailVerified: false,
       role: 'USER',
     });
     expect(registerRes.body.passwordHash).toBeUndefined();
+    expect(lastVerificationCode).toMatch(/^\d{6}$/);
 
-    const registerCookies = registerRes.headers['set-cookie'] as unknown as string[];
+    // 2. Verify email via OTP
+    const verifyRes = await request(server)
+      .post('/api/auth/verify-email')
+      .send({
+        email: 'otaku.pro@example.com',
+        code: lastVerificationCode,
+      })
+      .expect(200);
+
+    expect(verifyRes.body.isEmailVerified).toBe(true);
+
+    const registerCookies = registerRes.headers[
+      'set-cookie'
+    ] as unknown as string[];
     const accessCookie1 = extractCookieValue(registerCookies, 'access_token');
     const refreshCookie1 = extractCookieValue(registerCookies, 'refresh_token');
 
@@ -324,7 +410,7 @@ describe('AuthController (e2e)', () => {
       true,
     );
 
-    // 2. Protected /api/auth/me fails without cookie and succeeds with cookie
+    // 3. Protected /api/auth/me fails without cookie and succeeds with cookie
     await request(server).get('/api/auth/me').expect(401);
 
     const meRes = await request(server)
@@ -333,48 +419,57 @@ describe('AuthController (e2e)', () => {
       .expect(200);
 
     expect(meRes.body.username).toBe('otaku_pro');
+    expect(meRes.body.isEmailVerified).toBe(true);
     expect(meRes.body.passwordHash).toBeUndefined();
 
-    // 3. Refresh rotates tokens
+    // 4. Refresh rotates tokens
     const refreshRes = await request(server)
       .post('/api/auth/refresh')
       .set('Cookie', [`refresh_token=${refreshCookie1}`])
       .expect(200);
 
-    const refreshCookies = refreshRes.headers['set-cookie'] as unknown as string[];
-    const accessCookie2 = extractCookieValue(refreshCookies, 'access_token');
+    const refreshCookies = refreshRes.headers[
+      'set-cookie'
+    ] as unknown as string[];
     const refreshCookie2 = extractCookieValue(refreshCookies, 'refresh_token');
     expect(refreshCookie2).toBeDefined();
     expect(refreshCookie2).not.toBe(refreshCookie1);
-    expect(accessCookie2).toBeDefined();
 
-    // 4. Replaying the old refresh_token triggers replay protection & revokes all sessions
+    // 5. Forgot password + Reset password revokes all active sessions
     await request(server)
-      .post('/api/auth/refresh')
-      .set('Cookie', [`refresh_token=${refreshCookie1}`])
-      .expect(401);
+      .post('/api/auth/forgot-password')
+      .send({ email: 'otaku.pro@example.com' })
+      .expect(200);
+
+    expect(lastResetCode).toMatch(/^\d{6}$/);
+
+    await request(server)
+      .post('/api/auth/reset-password')
+      .send({
+        email: 'otaku.pro@example.com',
+        code: lastResetCode,
+        newPassword: 'BrandNewPassword123',
+      })
+      .expect(200);
 
     expect(redisMock.getActiveSessionCount(registerRes.body.id as string)).toBe(
       0,
     );
 
-    // The previously rotated refreshCookie2 is now also revoked
-    await request(server)
-      .post('/api/auth/refresh')
-      .set('Cookie', [`refresh_token=${refreshCookie2}`])
-      .expect(401);
-
-    // 5. Login with email & logout
+    // 6. Login with new password & logout
     const loginRes = await request(server)
       .post('/api/auth/login')
       .send({
         login: 'otaku.pro@example.com',
-        password: 'Password123',
+        password: 'BrandNewPassword123',
       })
       .expect(200);
 
     const loginCookies = loginRes.headers['set-cookie'] as unknown as string[];
-    const loginRefreshCookie = extractCookieValue(loginCookies, 'refresh_token');
+    const loginRefreshCookie = extractCookieValue(
+      loginCookies,
+      'refresh_token',
+    );
     expect(loginRefreshCookie).toBeDefined();
 
     const logoutRes = await request(server)

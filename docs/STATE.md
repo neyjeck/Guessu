@@ -12,10 +12,10 @@ tags:
 > **Note:** Keep this file strictly under 100 lines. Read at the start of every session and update upon task completion.
 
 ## Current Context
-- **Active Branch:** `dev` (merged `feat/auth`, `feat/auth-tests`, `feat/google-oauth`)
+- **Active Branch:** `dev` (merged `feat/auth`, `feat/auth-tests`, `feat/google-oauth`, `feat/otp-password-reset`)
 - **Latest Release Branch:** `main` (initial scaffolding synced)
 - **CI Pipeline:** `.github/workflows/ci.yml` configured for `main`, `dev`, and `feat/**`
-- **Database Status:** Prisma migrations `add_user_auth` & `add_google_oauth` applied (`User` with optional `passwordHash`, unique `googleId`, `Role` enum, `updatedAt`; `Anime`; `GameSession`). PostgreSQL 16 (`pg_trgm`) and Redis 7 active.
+- **Database Status:** Prisma migrations `add_user_auth`, `add_google_oauth`, & `add_email_verification` applied (`User` with `isEmailVerified`, optional `passwordHash`, unique `googleId`, `Role` enum, `updatedAt`; `Anime`; `GameSession`). PostgreSQL 16 (`pg_trgm`) and Redis 7 active.
 
 ## Completed Milestones
 - [x] Repository directory architecture initialized (`backend`, `frontend`, `scripts`, `data`, `docs`, `.github`).
@@ -31,6 +31,7 @@ tags:
 - [x] Obsidian documentation vault updated with `docs/API_CONTRACT.md`.
 - [x] Auth unit (`auth.service.spec.ts`) & e2e (`test/auth.e2e-spec.ts`) test suites added and passing (`feat/auth-tests`).
 - [x] Google OAuth 2.0 login & registration (`feat/google-oauth`): `GoogleStrategy`, `GoogleAuthGuard`, verified-email account linking, auto-generated unique usernames, `HttpOnly` cookie session issuance, and frontend "Continue with Google" flow.
+- [x] Real SMTP Email OTP Verification & Password Reset (`feat/otp-password-reset`): `MailModule` (`nodemailer`), `OtpService` (SHA-256 hashed 6-digit OTPs in Redis, 10m TTL, 60s resend cooldown, 3-attempt lockout, atomic SMTP rollback), global session revocation on password reset, and frontend OTP / Forgot Password UI + unverified email banner.
 
 ## Tasks In Progress
 - [ ] Phase 2: Sample anime dataset seeding (`feat/db-seed`).
