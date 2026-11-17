@@ -40,17 +40,40 @@ export interface RegisterPayload {
 export interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
+  authError: string | null;
+  clearAuthError: () => void;
   login: (payload: LoginPayload) => Promise<AuthUser>;
   register: (payload: RegisterPayload) => Promise<AuthUser>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  google_cancelled: 'Google sign-in was cancelled.',
+  google_auth_failed:
+    'Google authentication failed. Please ensure your Google account has a verified email and try again.',
+};
+
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [authError, setAuthError] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const errorCode = params.get('auth_error');
+    if (!errorCode) {
+      return null;
+    }
+    return (
+      OAUTH_ERROR_MESSAGES[errorCode] ??
+      'Authentication failed. Please try again.'
+    );
+  });
+
+  const clearAuthError = useCallback(() => {
+    setAuthError(null);
+  }, []);
 
   const refreshProfile = useCallback(async () => {
     try {
@@ -64,12 +87,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('auth_error')) {
+      params.delete('auth_error');
+      const remaining = params.toString();
+      const nextUrl = `${window.location.pathname}${remaining ? `?${remaining}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, document.title, nextUrl);
+    }
+
     void refreshProfile();
   }, [refreshProfile]);
 
   const login = useCallback(async (payload: LoginPayload): Promise<AuthUser> => {
     const response = await apiClient.post<AuthUser>('/auth/login', payload);
     setUser(response.data);
+    setAuthError(null);
     return response.data;
   }, []);
 
@@ -80,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         payload,
       );
       setUser(response.data);
+      setAuthError(null);
       return response.data;
     },
     [],
@@ -97,12 +130,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       isLoading,
+      authError,
+      clearAuthError,
       login,
       register,
       logout,
       refreshProfile,
     }),
-    [user, isLoading, login, register, logout, refreshProfile],
+    [
+      user,
+      isLoading,
+      authError,
+      clearAuthError,
+      login,
+      register,
+      logout,
+      refreshProfile,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

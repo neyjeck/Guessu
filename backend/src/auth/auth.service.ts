@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { User } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomUUID } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { CookieOptions, Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -33,6 +33,14 @@ export interface RefreshTokenPayload {
 export interface IssuedTokens {
   accessToken: string;
   refreshToken: string;
+}
+
+export interface GoogleUserProfile {
+  googleId: string;
+  email: string | null;
+  emailVerified: boolean;
+  displayName: string;
+  avatarUrl: string | null;
 }
 
 @Injectable()
@@ -85,16 +93,7 @@ export class AuthService implements OnModuleInit {
       },
     });
 
-    const sessionId = randomUUID();
-    await this.redisService.setRefreshTokenSession(
-      user.id,
-      sessionId,
-      RedisService.REFRESH_TOKEN_TTL_SECONDS,
-    );
-
-    const tokens = await this.issueTokenPair(user, sessionId);
-    this.attachAuthCookies(res, tokens);
-
+    await this.createSessionAndAttachCookies(user, res);
     return new UserResponseEntity(user);
   }
 
@@ -108,21 +107,73 @@ export class AuthService implements OnModuleInit {
 
     const isPasswordValid = await argon2.verify(hashToCompare, dto.password);
 
+    if (user && !user.passwordHash) {
+      throw new UnauthorizedException(
+        'This account is linked to Google. Please sign in with Google.',
+      );
+    }
+
     if (!user || !isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const sessionId = randomUUID();
-    await this.redisService.setRefreshTokenSession(
-      user.id,
-      sessionId,
-      RedisService.REFRESH_TOKEN_TTL_SECONDS,
+    await this.createSessionAndAttachCookies(user, res);
+    return new UserResponseEntity(user);
+  }
+
+  async validateGoogleUser(profile: GoogleUserProfile): Promise<User> {
+    const existingByGoogleId = await this.prisma.user.findUnique({
+      where: { googleId: profile.googleId },
+    });
+
+    if (existingByGoogleId) {
+      if (!existingByGoogleId.avatarUrl && profile.avatarUrl) {
+        return this.prisma.user.update({
+          where: { id: existingByGoogleId.id },
+          data: { avatarUrl: profile.avatarUrl },
+        });
+      }
+      return existingByGoogleId;
+    }
+
+    if (!profile.email || !profile.emailVerified) {
+      throw new UnauthorizedException(
+        'Google account must have a verified email address',
+      );
+    }
+
+    const normalizedEmail = profile.email.trim().toLowerCase();
+    const existingByEmail = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (existingByEmail) {
+      return this.prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          googleId: profile.googleId,
+          avatarUrl: existingByEmail.avatarUrl ?? profile.avatarUrl,
+        },
+      });
+    }
+
+    const username = await this.generateUniqueUsername(
+      profile.displayName || normalizedEmail.split('@')[0] || 'guesser',
     );
 
-    const tokens = await this.issueTokenPair(user, sessionId);
-    this.attachAuthCookies(res, tokens);
+    return this.prisma.user.create({
+      data: {
+        username,
+        email: normalizedEmail,
+        googleId: profile.googleId,
+        passwordHash: null,
+        avatarUrl: profile.avatarUrl,
+      },
+    });
+  }
 
-    return new UserResponseEntity(user);
+  async loginWithOAuthUser(user: User, res: Response): Promise<void> {
+    await this.createSessionAndAttachCookies(user, res);
   }
 
   async refresh(
@@ -216,6 +267,53 @@ export class AuthService implements OnModuleInit {
 
     this.clearAuthCookies(res);
     return { message: 'Logged out successfully' };
+  }
+
+  private async generateUniqueUsername(rawName: string): Promise<string> {
+    let base = rawName
+      .trim()
+      .replace(/[^a-zA-Z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    if (base.length < 3) {
+      base = `guesser_${base}`.replace(/_+$/, '');
+    }
+    base = base.slice(0, 15);
+
+    const existingBase = await this.prisma.user.findUnique({
+      where: { username: base },
+    });
+    if (!existingBase) {
+      return base;
+    }
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const suffix = String(randomInt(1000, 9999));
+      const candidate = `${base.slice(0, 20 - suffix.length)}${suffix}`;
+      const taken = await this.prisma.user.findUnique({
+        where: { username: candidate },
+      });
+      if (!taken) {
+        return candidate;
+      }
+    }
+
+    return `user_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  }
+
+  private async createSessionAndAttachCookies(
+    user: User,
+    res: Response,
+  ): Promise<void> {
+    const sessionId = randomUUID();
+    await this.redisService.setRefreshTokenSession(
+      user.id,
+      sessionId,
+      RedisService.REFRESH_TOKEN_TTL_SECONDS,
+    );
+
+    const tokens = await this.issueTokenPair(user, sessionId);
+    this.attachAuthCookies(res, tokens);
   }
 
   private async issueTokenPair(

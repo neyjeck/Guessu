@@ -7,7 +7,10 @@ export class UserResponseEntity implements User {
   email!: string;
 
   @Exclude()
-  passwordHash!: string;
+  passwordHash!: string | null;
+
+  @Exclude()
+  googleId!: string | null;
 
   role!: Role;
   avatarUrl!: string | null;

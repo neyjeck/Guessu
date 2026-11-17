@@ -403,3 +403,44 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+.oauth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  color: #6b7280;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.oauth-divider::before,
+.oauth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #1f2937;
+}
+
+.oauth-google-btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  padding: 0.7rem 1rem;
+  border-radius: 0.55rem;
+  border: 1px solid #374151;
+  background: #0b0f19;
+  color: #f3f4f6;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.oauth-google-btn:hover {
+  border-color: #6b7280;
+  background: #161e2e;
+}

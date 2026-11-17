@@ -18,7 +18,9 @@ describe('AuthService', () => {
   let prismaService: {
     user: {
       findFirst: jest.Mock;
+      findUnique: jest.Mock;
       create: jest.Mock;
+      update: jest.Mock;
     };
   };
   let usersService: {
@@ -46,6 +48,7 @@ describe('AuthService', () => {
     username: 'otaku_detective',
     email: 'otaku@example.com',
     passwordHash: 'hashed-password',
+    googleId: null,
     role: Role.USER,
     avatarUrl: null,
     profileTheme: 'default',
@@ -62,7 +65,9 @@ describe('AuthService', () => {
     prismaService = {
       user: {
         findFirst: jest.fn(),
+        findUnique: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
       },
     };
 
@@ -242,6 +247,124 @@ describe('AuthService', () => {
 
       expect(redisService.setRefreshTokenSession).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
+    });
+
+    it('rejects password login for Google-only users with a clear message', async () => {
+      const res = createMockResponse();
+      usersService.findByLogin.mockResolvedValue(
+        makeMockUser({ passwordHash: null, googleId: 'google-123' }),
+      );
+
+      await expect(
+        authService.login(
+          { login: 'otaku_detective', password: 'Password123' },
+          res,
+        ),
+      ).rejects.toThrow(
+        'This account is linked to Google. Please sign in with Google.',
+      );
+
+      expect(redisService.setRefreshTokenSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('validateGoogleUser', () => {
+    it('returns existing user matched by googleId', async () => {
+      const existing = makeMockUser({
+        googleId: 'google-123',
+        avatarUrl: 'https://example.com/avatar.png',
+      });
+      prismaService.user.findUnique.mockResolvedValueOnce(existing);
+
+      const user = await authService.validateGoogleUser({
+        googleId: 'google-123',
+        email: 'otaku@example.com',
+        emailVerified: true,
+        displayName: 'Otaku',
+        avatarUrl: 'https://example.com/new.png',
+      });
+
+      expect(user).toBe(existing);
+      expect(prismaService.user.create).not.toHaveBeenCalled();
+    });
+
+    it('links googleId and avatarUrl to an existing verified-email local account', async () => {
+      const localUser = makeMockUser({ googleId: null, avatarUrl: null });
+      const linkedUser = makeMockUser({
+        googleId: 'google-123',
+        avatarUrl: 'https://example.com/google.png',
+      });
+
+      prismaService.user.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(localUser);
+      prismaService.user.update.mockResolvedValueOnce(linkedUser);
+
+      const user = await authService.validateGoogleUser({
+        googleId: 'google-123',
+        email: 'OTAKU@example.com',
+        emailVerified: true,
+        displayName: 'Otaku',
+        avatarUrl: 'https://example.com/google.png',
+      });
+
+      expect(prismaService.user.update).toHaveBeenCalledWith({
+        where: { id: localUser.id },
+        data: {
+          googleId: 'google-123',
+          avatarUrl: 'https://example.com/google.png',
+        },
+      });
+      expect(user).toBe(linkedUser);
+    });
+
+    it('rejects unverified Google email when no googleId match exists', async () => {
+      prismaService.user.findUnique.mockResolvedValueOnce(null);
+
+      await expect(
+        authService.validateGoogleUser({
+          googleId: 'google-123',
+          email: 'otaku@example.com',
+          emailVerified: false,
+          displayName: 'Otaku',
+          avatarUrl: null,
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('creates a new OAuth user with sanitized unique username', async () => {
+      prismaService.user.findUnique
+        .mockResolvedValueOnce(null) // by googleId
+        .mockResolvedValueOnce(null) // by email
+        .mockResolvedValueOnce(null); // username availability check
+
+      prismaService.user.create.mockImplementation(
+        async ({
+          data,
+        }: {
+          data: {
+            username: string;
+            email: string;
+            googleId: string;
+            passwordHash: null;
+            avatarUrl: string | null;
+          };
+        }) => makeMockUser(data),
+      );
+
+      const user = await authService.validateGoogleUser({
+        googleId: 'google-999',
+        email: 'New.User@Example.com',
+        emailVerified: true,
+        displayName: 'Anime Fan!',
+        avatarUrl: 'https://example.com/pic.png',
+      });
+
+      expect(user.username).toBe('Anime_Fan');
+      expect(user.email).toBe('new.user@example.com');
+      expect(user.googleId).toBe('google-999');
+      expect(user.passwordHash).toBeNull();
     });
   });
 

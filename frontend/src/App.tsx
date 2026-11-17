@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Flame,
   Image,
@@ -24,12 +24,19 @@ interface AnimeSuggestion {
 }
 
 export function App() {
-  const { user, isLoading, logout } = useAuth();
+  const { user, isLoading, authError, logout } = useAuth();
   const [mode, setMode] = useState<GameMode>('CLUES');
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<AnimeSuggestion[]>([]);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
+
+  useEffect(() => {
+    if (authError) {
+      setAuthModalTab('login');
+      setAuthModalOpen(true);
+    }
+  }, [authError]);
 
   const openAuthModal = (tab: AuthTab) => {
     setAuthModalTab(tab);
