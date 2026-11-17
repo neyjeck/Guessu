@@ -40,30 +40,43 @@ class InMemoryPrismaMock {
     findUnique: async ({
       where,
     }: {
-      where: { id?: string; username?: string; email?: string };
+      where: {
+        id?: string;
+        username?: string;
+        email?: string;
+        googleId?: string;
+      };
     }): Promise<User | null> => {
       return (
         this.users.find(
           (u) =>
             (where.id !== undefined && u.id === where.id) ||
             (where.username !== undefined && u.username === where.username) ||
-            (where.email !== undefined && u.email === where.email),
+            (where.email !== undefined && u.email === where.email) ||
+            (where.googleId !== undefined && u.googleId === where.googleId),
         ) ?? null
       );
     },
     create: async ({
       data,
     }: {
-      data: { username: string; email: string; passwordHash: string };
+      data: {
+        username: string;
+        email: string;
+        passwordHash?: string | null;
+        googleId?: string | null;
+        avatarUrl?: string | null;
+      };
     }): Promise<User> => {
       const now = new Date();
       const user: User = {
         id: randomUUID(),
         username: data.username,
         email: data.email,
-        passwordHash: data.passwordHash,
+        passwordHash: data.passwordHash ?? null,
+        googleId: data.googleId ?? null,
         role: Role.USER,
-        avatarUrl: null,
+        avatarUrl: data.avatarUrl ?? null,
         profileTheme: 'default',
         badgeTitle: 'Rookie Guesser',
         rating: 1000,

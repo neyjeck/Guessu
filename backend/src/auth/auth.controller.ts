@@ -9,6 +9,8 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AuthGuard } from '@nestjs/passport';
 import { Throttle } from '@nestjs/throttler';
 import { User } from '@prisma/client';
 import { Request, Response } from 'express';
@@ -17,6 +19,7 @@ import { REFRESH_TOKEN_COOKIE } from './auth.constants';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 interface AuthenticatedRequest extends Request {
@@ -25,7 +28,10 @@ interface AuthenticatedRequest extends Request {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Post('register')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -44,6 +50,31 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<UserResponseEntity> {
     return this.authService.login(dto, res);
+  }
+
+  @Get('google')
+  @UseGuards(AuthGuard('google'))
+  googleLogin(): void {
+    // Initiates the Google OAuth 2.0 consent screen redirect via Passport
+  }
+
+  @Get('google/callback')
+  @UseGuards(GoogleAuthGuard)
+  async googleCallback(
+    @Req() req: AuthenticatedRequest,
+    @Res() res: Response,
+  ): Promise<void> {
+    const frontendUrl = this.configService.get<string>(
+      'FRONTEND_URL',
+      'http://localhost:5173',
+    );
+
+    if (!req.user) {
+      return;
+    }
+
+    await this.authService.loginWithOAuthUser(req.user, res);
+    res.redirect(frontendUrl);
   }
 
   @Post('refresh')

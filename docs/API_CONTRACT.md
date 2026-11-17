@@ -142,6 +142,33 @@ Returns the authenticated user's profile. Protected by `JwtAuthGuard`.
 
 ---
 
+### `GET /api/auth/google`
+
+Initiates the Google OAuth 2.0 login/registration flow via Passport (`passport-google-oauth20`), requesting `email` and `profile` scopes and redirecting (`302`) to Google's consent screen.
+
+- **Responses:**
+  - `302 Found`: Redirects to Google OAuth 2.0 consent screen.
+
+---
+
+### `GET /api/auth/google/callback`
+
+Handles the Google OAuth 2.0 callback:
+
+1. Looks up an existing user by `googleId`.
+2. If not found, checks for an existing account by verified `email` and links `googleId` (plus `avatarUrl` if empty).
+3. Otherwise creates a new account with an auto-generated sanitized unique `username` (`3–20` chars, `[a-zA-Z0-9_]`) and `passwordHash = null`.
+4. Initializes a 7-day Redis refresh session, sets `HttpOnly`, `SameSite=Strict` `access_token` and `refresh_token` cookies, and redirects (`302`) to `FRONTEND_URL` (no tokens are ever passed in URL query parameters).
+5. On failure or user cancellation, redirects (`302`) to `${FRONTEND_URL}?auth_error=google_cancelled|google_auth_failed`.
+
+- **Required Backend Environment Variables:**
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `GOOGLE_CALLBACK_URL` (e.g. `http://localhost:3000/api/auth/google/callback`)
+  - `FRONTEND_URL` (e.g. `http://localhost:5173`)
+
+---
+
 ## 4. Frontend Silent Refresh Flow (`frontend/src/api/client.ts`)
 
 1. All Axios requests run with `withCredentials: true`.
