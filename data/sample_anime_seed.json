@@ -1,0 +1,25 @@
+[
+  {
+    "anilistId": 154587,
+    "malId": 52991,
+    "titleEn": "Frieren: Beyond Journey's End",
+    "titleRomaji": "Sousou no Frieren",
+    "titleJa": "葬送のフリーレン",
+    "titleUk": "Фрірен: Похоронний обряд у кінці мандрівки",
+    "titleRu": "Провожающая в последний путь Фрирен",
+    "synonyms": ["Frieren", "Sousou no Frieren"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-gHSraOSa0nBG.jpg",
+    "screenshots": [
+      "https://cdn.animeguesser.local/frames/154587/step-1.webp",
+      "https://cdn.animeguesser.local/frames/154587/step-2.webp",
+      "https://cdn.animeguesser.local/frames/154587/step-3.webp"
+    ],
+    "clues": [
+      "The narrative begins precisely where a ten-year heroic campaign concludes, measuring time by meteor showers that return once every half-century.",
+      "Mundane folk spells—such as turning sweet grapes sour or polishing bronze statues—are prized more highly than battlefield magic.",
+      "A protagonist with a near-immortal lifespan retraces an old party's footsteps northward toward where souls are said to rest.",
+      "Demons in this world mimic human speech not out of empathy, but as an evolutionary predation strategy.",
+      "An elven mage who outlived her hero party takes on a human apprentice named Fern on a journey to Aureole."
+    ]
+  }
+]
