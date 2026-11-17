@@ -12,7 +12,7 @@ tags:
 > **Note:** Keep this file strictly under 100 lines. Read at the start of every session and update upon task completion.
 
 ## Current Context
-- **Active Branch:** `dev` (merged `feat/auth`)
+- **Active Branch:** `dev` (merged `feat/auth`, `feat/auth-tests`)
 - **Latest Release Branch:** `main` (initial scaffolding synced)
 - **CI Pipeline:** `.github/workflows/ci.yml` configured for `main`, `dev`, and `feat/**`
 - **Database Status:** Prisma migration `add_user_auth` applied (`User` with `passwordHash`, `Role` enum `USER | ADMIN`, `updatedAt`; `Anime`; `GameSession`). PostgreSQL 16 (`pg_trgm`) and Redis 7 active.
@@ -29,6 +29,7 @@ tags:
   - Security hardening: `helmet`, `cookie-parser`, strict CORS, `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`), `ClassSerializerInterceptor` (`UserResponseEntity` with `@Exclude()`), and Redis-backed `@nestjs/throttler` rate limiting.
   - Frontend `apiClient` (`withCredentials: true`, 401 silent refresh interceptor), `AuthContext`, and responsive `AuthModal`.
 - [x] Obsidian documentation vault updated with `docs/API_CONTRACT.md`.
+- [x] Auth unit (`auth.service.spec.ts`) & e2e (`test/auth.e2e-spec.ts`) test suites added and passing (`feat/auth-tests`).
 
 ## Tasks In Progress
 - [ ] Phase 2: Sample anime dataset seeding (`feat/db-seed`).
