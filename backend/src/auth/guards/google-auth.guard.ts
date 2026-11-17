@@ -23,16 +23,16 @@ export class GoogleAuthGuard extends AuthGuard('google') {
   handleRequest<TUser = unknown>(
     err: unknown,
     user: TUser,
-    _info: unknown,
+    info: unknown,
     context: ExecutionContext,
   ): TUser {
     if (err || !user) {
-      this.logger.warn(
-        `Google OAuth callback failed: ${err instanceof Error ? err.message : String(err ?? 'No user returned')}`,
-      );
       const http = context.switchToHttp();
       const res = http.getResponse<Response>();
       const req = http.getRequest<Request>();
+      this.logger.warn(
+        `Google OAuth callback failed: err=${err instanceof Error ? err.message : String(err ?? 'none')} info=${JSON.stringify(info ?? null)} query=${JSON.stringify(req.query ?? {})}`,
+      );
       const frontendUrl = this.configService.get<string>(
         'FRONTEND_URL',
         'http://localhost:5173',

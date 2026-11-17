@@ -2,7 +2,7 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { User } from '@prisma/client';
-import { Profile, Strategy, VerifyCallback } from 'passport-google-oauth20';
+import { Profile, Strategy } from 'passport-google-oauth20';
 import { AuthService, GoogleUserProfile } from '../auth.service';
 
 @Injectable()
@@ -39,8 +39,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     _accessToken: string,
     _refreshToken: string,
     profile: Profile,
-    done: VerifyCallback,
-  ): Promise<void> {
+  ): Promise<User> {
     try {
       const primaryEmail = profile.emails?.[0];
       const rawJson = profile._json as
@@ -63,19 +62,15 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
         avatarUrl: profile.photos?.[0]?.value ?? null,
       };
 
-      const user: User =
-        await this.authService.validateGoogleUser(googleProfile);
-      done(null, user);
+      return await this.authService.validateGoogleUser(googleProfile);
     } catch (error) {
       this.logger.warn(
         `Google OAuth validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
-      done(
-        error instanceof UnauthorizedException
-          ? error
-          : new UnauthorizedException('Google authentication failed'),
-        false,
-      );
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      throw new UnauthorizedException('Google authentication failed');
     }
   }
 }
