@@ -7,6 +7,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum Role {
+  USER
+  ADMIN
+}
+
 enum GameMode {
   CLUES
   SCREENSHOT
@@ -23,6 +28,8 @@ model User {
   id            String        @id @default(uuid())
   username      String        @unique
   email         String        @unique
+  passwordHash  String
+  role          Role          @default(USER)
   avatarUrl     String?
   profileTheme  String        @default("default")
   badgeTitle    String        @default("Rookie Guesser")
@@ -30,6 +37,7 @@ model User {
   currentStreak Int           @default(0)
   maxStreak     Int           @default(0)
   createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
   gameSessions  GameSession[]
 }
 

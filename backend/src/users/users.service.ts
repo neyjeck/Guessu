@@ -19,6 +19,22 @@ export class UsersService {
     return this.prisma.user.findUnique({ where: { username } });
   }
 
+  async findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findUnique({
+      where: { email: email.trim().toLowerCase() },
+    });
+  }
+
+  async findByLogin(login: string): Promise<User | null> {
+    const trimmed = login.trim();
+    const lowered = trimmed.toLowerCase();
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [{ username: trimmed }, { email: lowered }],
+      },
+    });
+  }
+
   async updateCustomization(
     id: string,
     dto: UpdateProfileDto,
