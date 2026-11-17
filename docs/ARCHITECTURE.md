@@ -18,8 +18,9 @@ Anime Guesser uses a **NestJS Modular Monolith** architecture inside `backend/`.
 ```
 backend/src/
 ├── prisma/        # Global PrismaModule & PrismaService
-├── auth/          # Authentication endpoints & session/token orchestration
-├── users/         # User profile CRUD, avatars, themes, titles, streak stats
+├── redis/         # Global RedisModule, RedisService & RedisThrottlerStorage
+├── auth/          # JWT + Redis session auth, Argon2id hashing, HttpOnly cookies
+├── users/         # User profile CRUD, UserResponseEntity (@Exclude), streak stats
 ├── anime/         # Multilingual anime catalog & pg_trgm fuzzy search
 ├── game/          # Session lifecycle, clue/frame reveal, anti-cheat verification
 └── leaderboard/   # Global rating & maxStreak ranking queries

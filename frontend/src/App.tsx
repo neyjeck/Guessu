@@ -1,6 +1,18 @@
 import { useState } from 'react';
-import { Flame, Image, Search, Sparkles, Trophy, User } from 'lucide-react';
+import {
+  Flame,
+  Image,
+  LogIn,
+  LogOut,
+  Search,
+  Sparkles,
+  Trophy,
+  User,
+  UserPlus,
+} from 'lucide-react';
 import { apiClient } from './api/client';
+import { AuthModal, AuthTab } from './components/AuthModal';
+import { useAuth } from './context/AuthContext';
 
 type GameMode = 'CLUES' | 'SCREENSHOT' | 'ENDLESS';
 
@@ -12,9 +24,17 @@ interface AnimeSuggestion {
 }
 
 export function App() {
+  const { user, isLoading, logout } = useAuth();
   const [mode, setMode] = useState<GameMode>('CLUES');
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<AnimeSuggestion[]>([]);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
+
+  const openAuthModal = (tab: AuthTab) => {
+    setAuthModalTab(tab);
+    setAuthModalOpen(true);
+  };
 
   const handleSearchChange = async (value: string) => {
     setQuery(value);
@@ -41,14 +61,49 @@ export function App() {
         </div>
         <div className="nav-stats">
           <span className="pill">
-            <Flame size={16} /> Streak: 0
+            <Flame size={16} /> Streak: {user ? user.currentStreak : 0}
           </span>
           <span className="pill">
-            <Trophy size={16} /> 1000 MMR
+            <Trophy size={16} /> {user ? user.rating : 1000} MMR
           </span>
-          <span className="pill">
-            <User size={16} /> Guest
-          </span>
+
+          {isLoading ? (
+            <span className="pill">Loading...</span>
+          ) : user ? (
+            <>
+              <span className="pill user-pill" title={user.badgeTitle}>
+                <User size={16} />
+                <strong>{user.username}</strong>
+              </span>
+              <button
+                type="button"
+                className="nav-auth-btn secondary"
+                onClick={() => void logout()}
+              >
+                <LogOut size={15} />
+                Sign Out
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="nav-auth-btn secondary"
+                onClick={() => openAuthModal('login')}
+              >
+                <LogIn size={15} />
+                Sign In
+              </button>
+              <button
+                type="button"
+                className="nav-auth-btn primary"
+                onClick={() => openAuthModal('register')}
+              >
+                <UserPlus size={15} />
+                Register
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -112,6 +167,12 @@ export function App() {
           </div>
         </section>
       </main>
+
+      <AuthModal
+        isOpen={authModalOpen}
+        initialTab={authModalTab}
+        onClose={() => setAuthModalOpen(false)}
+      />
     </div>
   );
 }

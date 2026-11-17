@@ -14,6 +14,7 @@ Welcome to the Obsidian knowledge base for **Anime Guesser**, a competitive full
 - [[STATE]] — Current project state, active branch, completed milestones, database status, and open tasks (**read first in every session**).
 - [[VISION]] — Product vision, core gameplay loops, progressive AI clue philosophy, multilingual search, and multiplayer roadmap.
 - [[ARCHITECTURE]] — System design, NestJS modular monolith structure, Prisma data model, `pg_trgm` fuzzy search, and zero-leakage anti-cheat design.
+- [[API_CONTRACT]] — Authentication & session endpoints (`/api/auth/*`), `HttpOnly` cookie flow, and Redis token rotation contract.
 - [[BACKLOG]] — Phased development roadmap (Phases 1 through 5).
 - [[GIT_WORKFLOW]] — Git branching model (`main`, `dev`, `feat/*`, `fix/*`), CI pipeline, and Conventional Commits rules.
 
