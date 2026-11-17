@@ -1,12 +1,23 @@
-import { ExecutionContext, Injectable } from '@nestjs/common';
+import { ExecutionContext, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '@nestjs/passport';
 import { Request, Response } from 'express';
 
 @Injectable()
 export class GoogleAuthGuard extends AuthGuard('google') {
+  private readonly logger = new Logger(GoogleAuthGuard.name);
+
   constructor(private readonly configService: ConfigService) {
     super();
+  }
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const result = (await super.canActivate(context)) as boolean;
+    const res = context.switchToHttp().getResponse<Response>();
+    if (res.headersSent) {
+      return false;
+    }
+    return result;
   }
 
   handleRequest<TUser = unknown>(
@@ -16,6 +27,9 @@ export class GoogleAuthGuard extends AuthGuard('google') {
     context: ExecutionContext,
   ): TUser {
     if (err || !user) {
+      this.logger.warn(
+        `Google OAuth callback failed: ${err instanceof Error ? err.message : String(err ?? 'No user returned')}`,
+      );
       const http = context.switchToHttp();
       const res = http.getResponse<Response>();
       const req = http.getRequest<Request>();
@@ -31,7 +45,9 @@ export class GoogleAuthGuard extends AuthGuard('google') {
           ? 'google_cancelled'
           : 'google_auth_failed';
 
-      res.redirect(`${frontendUrl}?auth_error=${encodeURIComponent(reason)}`);
+      if (!res.headersSent) {
+        res.redirect(`${frontendUrl}?auth_error=${encodeURIComponent(reason)}`);
+      }
       return undefined as unknown as TUser;
     }
 

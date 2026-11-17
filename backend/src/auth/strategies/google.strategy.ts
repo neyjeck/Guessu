@@ -43,10 +43,11 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
   ): Promise<void> {
     try {
       const primaryEmail = profile.emails?.[0];
-      const emailVerifiedRaw = primaryEmail?.verified as
-        | boolean
-        | string
+      const rawJson = profile._json as
+        | { email_verified?: boolean | string }
         | undefined;
+      const emailVerifiedRaw =
+        primaryEmail?.verified ?? rawJson?.email_verified;
       const emailVerified =
         emailVerifiedRaw === true || emailVerifiedRaw === 'true';
 
