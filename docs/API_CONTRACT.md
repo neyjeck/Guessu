@@ -323,3 +323,73 @@ Generates **6 fresh progressive clues on the fly** (`temperature: 0.9`) from the
   1. **Primary LLM:** Groq (`llama-3.3-70b-versatile`) via `GROQ_API_KEY`.
   2. **Fallback LLM:** Google Gemini (`gemini-2.5-flash`) via `GEMINI_API_KEY` on rate-limit (`429`) or network errors.
   3. **Emergency Redis Cache:** Last valid generated clue set per `(animeId, lang)` is cached in Redis (`ai_clues:backup:<animeId>:<lang>`, 30d TTL) and served if both LLM providers are unreachable, with deterministic dossier synthesis as final fallback.
+
+---
+
+## 7. Solo Game Engine (`GameModule` — Redis-Backed State)
+
+All solo game endpoints are protected by `JwtAuthGuard` (`HttpOnly` `access_token` cookie). Active round state is stored per user in Redis under `game:solo:<userId>` with a 2-hour TTL (`7200s`), tracking:
+- `targetAnimeId`: string (strictly server-side while `status === 'IN_PROGRESS'`)
+- `clues`: 6 progressive clue objects (`step: 1..6`, `difficulty: 'HARD' | 'MEDIUM' | 'EASY'`, `text: string`)
+- `unlockedStep`: `1..6`
+- `guesses`: `{ animeId: string, title: string, isCorrect: boolean }[]`
+- `recentAnimeIds`: last 15 played anime IDs to prevent immediate repeats
+- `status`: `'IN_PROGRESS' | 'WON' | 'LOST'`
+
+### `POST /api/game/start`
+
+Selects a random anime via `AnimeService.getRandomAnime(recentAnimeIds)` (using a background pre-warmed Redis buffer `game:solo:next:<userId>:<lang>` when available), generates 6 fresh clues via `AiClueService` in the requested language, saves session state in Redis with `unlockedStep = 1`, and returns **only Clue #1** alongside current user stats.
+
+- **Request Body (`StartGameDto`):**
+  ```json
+  {
+    "lang": "uk"
+  }
+  ```
+- **Response (`200 OK` — `SoloGameResponse`):**
+  ```json
+  {
+    "status": "IN_PROGRESS",
+    "unlockedStep": 1,
+    "maxSteps": 6,
+    "unlockedClues": [
+      {
+        "step": 1,
+        "difficulty": "HARD",
+        "text": "Вигаданий гурт із цього аніме став реальним музичним колективом..."
+      }
+    ],
+    "guesses": [],
+    "userStats": {
+      "currentStreak": 3,
+      "maxStreak": 7,
+      "rating": 1080
+    },
+    "answer": null
+  }
+  ```
+
+### `POST /api/game/guess`
+
+Submits an anime guess (`{ "animeId": "1" }`) or skips to the next clue (`{ "skip": true }`).
+
+- **Request Body (`SubmitGuessDto`):**
+  ```json
+  {
+    "animeId": "1",
+    "skip": false
+  }
+  ```
+- **Scoring & Streak Rules:**
+  - **Correct Guess (`animeId === targetAnimeId`):**
+    - Marks round `'WON'`.
+    - Points by `unlockedStep`: steps `1–2` = `+30`, steps `3–4` = `+20`, steps `5–6` = `+10`.
+    - Increments `currentStreak` (`+1`), updates `maxStreak` if beaten, adds `earnedPoints` to `rating` in PostgreSQL, and reveals `answer` and `allClues`.
+  - **Wrong Guess or Skip (`unlockedStep < 6`):**
+    - Does **not** reset `currentStreak`; increments `unlockedStep` by `1` and returns `unlockedClues` (`1..unlockedStep`) and updated `guesses`.
+  - **Wrong Guess or Skip on Final Step (`unlockedStep === 6`):**
+    - Marks round `'LOST'`, resets `currentStreak` to `0` in PostgreSQL, and reveals `answer` and `allClues`.
+
+### `POST /api/game/give-up`
+
+Immediately marks the active round as `'LOST'`, resets the user's `currentStreak` to `0` in PostgreSQL, and returns `{ status: 'LOST', userStats, answer, allClues }`.

@@ -5,6 +5,8 @@ export type AppLanguage = 'uk' | 'en' | 'ru';
 export interface TranslationDictionary {
   brandTitle: string;
   streakLabel: string;
+  bestStreakLabel: string;
+  ratingLabel: string;
   loading: string;
   signIn: string;
   register: string;
@@ -23,12 +25,29 @@ export interface TranslationDictionary {
   noResults: string;
   selectedAnimeLabel: string;
   keyboardHint: string;
+  clueStepLabel: string;
+  generatingClues: string;
+  startRoundBtn: string;
+  guessBtn: string;
+  skipBtn: string;
+  giveUpBtn: string;
+  wrongGuessesTitle: string;
+  wonTitle: string;
+  lostTitle: string;
+  earnedPointsLabel: string;
+  allCluesTitle: string;
+  remainingCluesTitle: string;
+  nextAnimeBtn: string;
+  authPromptTitle: string;
+  authPromptDesc: string;
 }
 
 const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
   uk: {
     brandTitle: 'Anime Guesser',
     streakLabel: 'Серія',
+    bestStreakLabel: 'Рекорд',
+    ratingLabel: 'Рейтинг',
     loading: 'Завантаження...',
     signIn: 'Увійти',
     register: 'Реєстрація',
@@ -49,10 +68,28 @@ const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     noResults: 'Збігів не знайдено',
     selectedAnimeLabel: 'Обрано відповідь:',
     keyboardHint: '↑↓ навігація • Enter обрати • Esc закрити',
+    clueStepLabel: 'Підказка',
+    generatingClues: 'ШІ генерує 6 свіжих підказок для нового раунду...',
+    startRoundBtn: 'Почати раунд',
+    guessBtn: 'Вгадати',
+    skipBtn: 'Наступна підказка (Пропустити)',
+    giveUpBtn: 'Здатися',
+    wrongGuessesTitle: 'Попередні спроби у цьому раунді:',
+    wonTitle: 'Перемога! Ви вгадали аніме!',
+    lostTitle: 'Раунд програно — серію скинуто',
+    earnedPointsLabel: 'Нараховано очок',
+    allCluesTitle: 'Усі 6 підказок цього раунду',
+    remainingCluesTitle: 'Нерозкриті підказки',
+    nextAnimeBtn: 'Наступне аніме',
+    authPromptTitle: 'Увійдіть, щоб почати гру',
+    authPromptDesc:
+      'Соло-режим зберігає вашу поточну серію (Streak), рекорд та MMR-рейтинг у Redis і PostgreSQL.',
   },
   en: {
     brandTitle: 'Anime Guesser',
     streakLabel: 'Streak',
+    bestStreakLabel: 'Best Streak',
+    ratingLabel: 'Rating',
     loading: 'Loading...',
     signIn: 'Sign In',
     register: 'Register',
@@ -73,10 +110,28 @@ const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     noResults: 'No matching anime found',
     selectedAnimeLabel: 'Selected guess:',
     keyboardHint: '↑↓ navigate • Enter select • Esc close',
+    clueStepLabel: 'Clue',
+    generatingClues: 'AI is generating 6 fresh clues for this round...',
+    startRoundBtn: 'Start Round',
+    guessBtn: 'Guess',
+    skipBtn: 'Next Clue (Skip)',
+    giveUpBtn: 'Give Up',
+    wrongGuessesTitle: 'Previous wrong guesses in this round:',
+    wonTitle: 'Victory! You guessed the anime!',
+    lostTitle: 'Round Lost — Streak Reset',
+    earnedPointsLabel: 'Earned Points',
+    allCluesTitle: 'All 6 Clues for this Anime',
+    remainingCluesTitle: 'Remaining Unrevealed Clues',
+    nextAnimeBtn: 'Next Anime',
+    authPromptTitle: 'Sign in to start playing',
+    authPromptDesc:
+      'Solo mode tracks your active session in Redis and persists your Streak, Best Streak, and Rating in PostgreSQL.',
   },
   ru: {
     brandTitle: 'Anime Guesser',
     streakLabel: 'Серия',
+    bestStreakLabel: 'Рекорд',
+    ratingLabel: 'Рейтинг',
     loading: 'Загрузка...',
     signIn: 'Войти',
     register: 'Регистрация',
@@ -97,6 +152,22 @@ const TRANSLATIONS: Record<AppLanguage, TranslationDictionary> = {
     noResults: 'Совпадений не найдено',
     selectedAnimeLabel: 'Выбранный ответ:',
     keyboardHint: '↑↓ навигация • Enter выбрать • Esc закрыть',
+    clueStepLabel: 'Подсказка',
+    generatingClues: 'ИИ генерирует 6 свежих подсказок для нового раунда...',
+    startRoundBtn: 'Начать раунд',
+    guessBtn: 'Угадать',
+    skipBtn: 'Следующая подсказка (Пропустить)',
+    giveUpBtn: 'Сдаться',
+    wrongGuessesTitle: 'Предыдущие попытки в этом раунде:',
+    wonTitle: 'Победа! Вы угадали аниме!',
+    lostTitle: 'Раунд проигран — серия сброшена',
+    earnedPointsLabel: 'Получено очков',
+    allCluesTitle: 'Все 6 подсказок этого раунда',
+    remainingCluesTitle: 'Нераскрытые подсказки',
+    nextAnimeBtn: 'Следующее аниме',
+    authPromptTitle: 'Войдите, чтобы начать игру',
+    authPromptDesc:
+      'Соло-режим сохраняет вашу текущую серию (Streak), рекорд и MMR-рейтинг в Redis и PostgreSQL.',
   },
 };
 
