@@ -1,0 +1,566 @@
+[
+  {
+    "anilistId": 10793,
+    "malId": 10793,
+    "titleEn": "Guilty Crown",
+    "titleRomaji": "Guilty Crown",
+    "titleJa": "ギルティクラウン",
+    "titleUk": "Корона грішника",
+    "titleRu": "Корона грешника",
+    "synonyms": ["GC", "Корона провини", "Гильдия Короны"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx10793-f576138c.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 245000,
+      "genres": ["Action", "Drama", "Mecha", "Psychological", "Romance", "Sci-Fi"],
+      "tags": ["Super Power", "Post-Apocalyptic", "Dystopian", "Terrorism", "Virus", "Music"],
+      "anilistDescription": "In 2039, ten years after the outbreak of the Apocalypse Virus on Lost Christmas left Japan under the control of the multinational organization GHQ, anti-social student Shu Ouma encounters Inori Yuzuriha, the vocalist of the internet group Egoist and a member of the resistance group Funeral Parlor.",
+      "wikipediaPlot": "Set in 2039 Tokyo following the Lost Christmas biological catastrophe, Shu Ouma accidentally acquires the Power of the King via the Void Genome, allowing him to draw weapons and tools called Voids from the hearts of people under the age of 17. Alongside Gai Tsutsugami and Inori Yuzuriha of Funeral Parlor, Shu is drawn into the rebellion against GHQ and the Da'ath conspiracy.",
+      "characters": [
+        {
+          "name": "Shu Ouma",
+          "role": "MAIN",
+          "description": "A 17-year-old student at Tennouzu First High School who gains the Power of the King in his right hand to extract Voids from people's hearts."
+        },
+        {
+          "name": "Inori Yuzuriha",
+          "role": "MAIN",
+          "description": "The quiet pink-haired vocalist of Egoist and member of Funeral Parlor whose Void is a giant broadsword."
+        },
+        {
+          "name": "Gai Tsutsugami",
+          "role": "MAIN",
+          "description": "Charismatic leader of the resistance group Funeral Parlor who can see the Voids inside people."
+        },
+        {
+          "name": "Ayase Shinomiya",
+          "role": "SUPPORTING",
+          "description": "An Endlave mecha pilot for Funeral Parlor who uses a wheelchair and refuses to rely on others."
+        }
+      ],
+      "fandomTrivia": [
+        "The fictional band EGOIST, fronted by Chelly and produced by ryo of supercell, became a real-world chart-topping musical act after debuting in this series.",
+        "Inori Yuzuriha's iconic 'cat's cradle' red string pose and the song 'My Dearest' became defining 2010s anime community memes.",
+        "A person's Void takes physical shape based on the deepest complexes, fears, and secrets hidden in their heart, ranging from a giant broadsword to a simple pair of shears or a refrigerator."
+      ],
+      "fandomUrl": "https://guiltycrown.fandom.com/wiki/Shu_Ouma"
+    }
+  },
+  {
+    "anilistId": 154587,
+    "malId": 52991,
+    "titleEn": "Frieren: Beyond Journey's End",
+    "titleRomaji": "Sousou no Frieren",
+    "titleJa": "葬送のフリーレン",
+    "titleUk": "Фрірен: Похоронний обряд у кінці мандрівки",
+    "titleRu": "Провожающая в последний путь Фрирен",
+    "synonyms": ["Frieren", "Проводжаючи в останню путь Фрірен"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-gHSraOSa0nBG.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 420000,
+      "genres": ["Adventure", "Drama", "Fantasy"],
+      "tags": ["Elf", "Magic", "Time Skip", "Philosophy", "Demons", "Travel"],
+      "anilistDescription": "After a ten-year quest alongside the Hero Himmel, the Priest Heiter, and the Warrior Eisen to defeat the Demon King, the elven mage Frieren realizes how little she understood her human companions once old age claims Himmel.",
+      "wikipediaPlot": "An elven mage who lived for over a thousand years embarks on a new journey northward toward Aureole, the resting place of souls, accompanied by her young human apprentice Fern and the warrior Stark, following the exact path her former hero party once took.",
+      "characters": [
+        {
+          "name": "Frieren",
+          "role": "MAIN",
+          "description": "An ancient elven mage obsessed with collecting mundane folk grimoires who concealed her mana for over a millennium."
+        },
+        {
+          "name": "Fern",
+          "role": "MAIN",
+          "description": "Orphan raised by Heiter who becomes a First-Class Mage prodigy specializing in rapid Zoltraak barrages."
+        },
+        {
+          "name": "Stark",
+          "role": "MAIN",
+          "description": "Eisen's timid yet extraordinarily durable vanguard apprentice who slays a solar dragon single-handedly."
+        },
+        {
+          "name": "Himmel",
+          "role": "SUPPORTING",
+          "description": "The late hero who loved posing for statues and inspired generations even without pulling the true Hero's Sword."
+        }
+      ],
+      "fandomTrivia": [
+        "The protagonist falls for every single Mimic chest despite having a 99% detection spell because of the 1% chance it contains a rare grimoire.",
+        "A spell once feared as the terrifying Killing Magic of the demon Qual—Zoltraak—was studied by humanity for 80 years until it became Basic Offensive Magic.",
+        "Aura the Guillotine's encounter ends with one of the most quoted four-word commands in modern anime fandom."
+      ],
+      "fandomUrl": "https://frieren.fandom.com/wiki/Frieren"
+    }
+  },
+  {
+    "anilistId": 9253,
+    "malId": 9253,
+    "titleEn": "Steins;Gate",
+    "titleRomaji": "Steins;Gate",
+    "titleJa": "シュタインズ・ゲート",
+    "titleUk": "Брама Штейна",
+    "titleRu": "Врата Штейна",
+    "synonyms": ["Steins Gate", "Штайнз Гейт"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx9253-7pdcT6f6jB.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 590000,
+      "genres": ["Drama", "Psychological", "Sci-Fi", "Thriller"],
+      "tags": ["Time Travel", "Alternate Universe", "Conspiracy", "Otaku Culture", "Chuunibyou"],
+      "anilistDescription": "Self-proclaimed mad scientist Rintaro Okabe runs the Future Gadget Laboratory in Akihabara with Mayuri Shiina and Itaru 'Daru' Hashida, accidentally turning a microwave oven and cell phone into a device capable of sending text messages into the past.",
+      "wikipediaPlot": "Set in Akihabara in summer 2010, Rintaro Okabe discovers that sending D-Mails shifts the world across attractor fields controlled by SERN and John Titor, forcing him accompanied by Kurisu Makise to undo every change to reach the 1.048596% divergence worldline.",
+      "characters": [
+        {
+          "name": "Rintaro Okabe",
+          "role": "MAIN",
+          "description": "Lab Member 001 who calls himself Hououin Kyouma, wears a white lab coat, drinks Dr Pepper, and possesses the Reading Steiner ability."
+        },
+        {
+          "name": "Kurisu Makise",
+          "role": "MAIN",
+          "description": "18-year-old neuroscience prodigy published in Science magazine whom Okabe nicknames Christina and @channeler."
+        },
+        {
+          "name": "Mayuri Shiina",
+          "role": "MAIN",
+          "description": "Okabe's childhood friend and Lab Member 002 known for her signature greeting 'Tutturu!' and making cosplay costumes."
+        },
+        {
+          "name": "Itaru Hashida",
+          "role": "MAIN",
+          "description": "Lab Member 003 ('Daru'), a super-hacker (supah hacka) who hacks into SERN's IBN 5100 database."
+        }
+      ],
+      "fandomTrivia": [
+        "Bananas placed inside the PhoneWave (name subject to change) teleport back to the bunch as green gelatinous 'gel-bananas'.",
+        "Okabe's catchphrase 'El Psy Kongroo' and his obsession with Dr Pepper ('an intellectual drink for the chosen ones') are iconic fandom staples.",
+        "The Divergence Meter built with Nixie tubes measures worldline shifts relative to the Alpha and Beta Attractor Fields."
+      ],
+      "fandomUrl": "https://steins-gate.fandom.com/wiki/Rintaro_Okabe"
+    }
+  },
+  {
+    "anilistId": 16498,
+    "malId": 16498,
+    "titleEn": "Attack on Titan",
+    "titleRomaji": "Shingeki no Kyojin",
+    "titleJa": "進撃の巨人",
+    "titleUk": "Атака титанів",
+    "titleRu": "Атака титанов",
+    "synonyms": ["AoT", "SNK", "Вторжение гигантов"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx16498-C6FPmWm59CyP.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 820000,
+      "genres": ["Action", "Drama", "Fantasy", "Mystery"],
+      "tags": ["Military", "Survival", "Kaiju", "Tragedy", "Revenge", "Politics"],
+      "anilistDescription": "For a century humanity lived behind three concentric walls—Maria, Rose, and Sina—until the sudden appearance of a 60-meter Colossal humanoid breaches the outer gate of Shiganshina District.",
+      "wikipediaPlot": "Eren Yeager, Mikasa Ackerman, and Armin Arlert enlist in the Survey Corps using Vertical Maneuvering Equipment to fight man-eating giants, eventually uncovering the truth tucked inside Grisha Yeager's basement about the island of Paradis and the nation of Marley.",
+      "characters": [
+        {
+          "name": "Eren Yeager",
+          "role": "MAIN",
+          "description": "A fiercely driven youth from Shiganshina who inherits the Attack and Founding powers after his home is destroyed."
+        },
+        {
+          "name": "Mikasa Ackerman",
+          "role": "MAIN",
+          "description": "An elite soldier worth a hundred ordinary troops who always wears the red scarf given to her as a child."
+        },
+        {
+          "name": "Levi Ackerman",
+          "role": "SUPPORTING",
+          "description": "Captain of the Survey Corps Special Operations Squad, renowned as humanity's strongest soldier and a neat freak."
+        },
+        {
+          "name": "Erwin Smith",
+          "role": "SUPPORTING",
+          "description": "13th Commander of the Survey Corps famous for his 'Shinzo wo Sasageyo' salute and final cavalry charge."
+        }
+      ],
+      "fandomTrivia": [
+        "Sasha Blouse's introduction scene where she calmly offers her drill instructor 'half' of a stolen steamed potato became one of the series' most enduring memes.",
+        "Soldiers zip through forests and cities using gas-powered Omni-Directional Mobility (ODM) gear aimed directly at the nape of the neck.",
+        "Anyone inheriting one of the Nine powers is bound by the Curse of Ymir, limiting their remaining lifespan to exactly 13 years."
+      ],
+      "fandomUrl": "https://attackontitan.fandom.com/wiki/Eren_Yeager"
+    }
+  },
+  {
+    "anilistId": 1535,
+    "malId": 1535,
+    "titleEn": "Death Note",
+    "titleRomaji": "Death Note",
+    "titleJa": "DEATH NOTE",
+    "titleUk": "Зошит смерті",
+    "titleRu": "Тетрадь смерти",
+    "synonyms": ["DN"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1535-lawCwhzhi96X.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 760000,
+      "genres": ["Mystery", "Psychological", "Supernatural", "Thriller"],
+      "tags": ["Detective", "Anti-Hero", "Crime", "Gods", "Philosophy", "Mind Games"],
+      "anilistDescription": "Genius high school student Light Yagami discovers a black supernatural notebook dropped into the human world by the Shinigami Ryuk that kills anyone whose name is written inside while picturing their face.",
+      "wikipediaPlot": "Adopting the alias 'Kira', Light Yagami attempts to rid the world of criminals, sparking an intricate psychological cat-and-mouse duel against the mysterious barefoot world-renowned detective known only as L.",
+      "characters": [
+        {
+          "name": "Light Yagami",
+          "role": "MAIN",
+          "description": "Top-scoring student across Japan and son of police chief Soichiro Yagami who seeks to become the God of the New World as Kira."
+        },
+        {
+          "name": "L Lawliet",
+          "role": "MAIN",
+          "description": "World's greatest detective raised at Wammy's House who sits crouched on chairs and consumes mountains of sweets."
+        },
+        {
+          "name": "Ryuk",
+          "role": "MAIN",
+          "description": "A bored Shinigami addicted to juicy human-world apples who dropped a second notebook just for entertainment."
+        },
+        {
+          "name": "Misa Amane",
+          "role": "SUPPORTING",
+          "description": "A Gothic Lolita idol and the Second Kira who made the Shinigami Eyes deal twice."
+        }
+      ],
+      "fandomTrivia": [
+        "The dramatic sequence 'I'll take a potato chip... and EAT IT!' while concealing a mini LCD television inside a snack bag is one of the most famous scenes in anime history.",
+        "If the cause of death is not specified within 40 seconds of writing the person's name, the target automatically dies of a heart attack.",
+        "Trading half of one's remaining lifespan grants the Shinigami Eyes, revealing any person's true name and lifespan floating above their head."
+      ],
+      "fandomUrl": "https://deathnote.fandom.com/wiki/Light_Yagami"
+    }
+  },
+  {
+    "anilistId": 1575,
+    "malId": 1575,
+    "titleEn": "Code Geass: Lelouch of the Rebellion",
+    "titleRomaji": "Code Geass: Hangyaku no Lelouch",
+    "titleJa": "コードギアス 反逆のルルーシュ",
+    "titleUk": "Код Гіас: Повстання Лелуша",
+    "titleRu": "Код Гиас: Восставший Лелуш",
+    "synonyms": ["Code Geass", "Код Гіасс"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1575-Z7efX2N0s2.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 560000,
+      "genres": ["Action", "Drama", "Mecha", "Sci-Fi", "Thriller"],
+      "tags": ["Anti-Hero", "Military", "Politics", "Super Power", "Rebellion", "Alternate History"],
+      "anilistDescription": "In an alternate timeline where the Holy Britannian Empire conquered Japan and renamed it Area 11, exiled prince Lelouch vi Britannia receives the Power of Absolute Obedience from a mysterious immortal girl named C.C.",
+      "wikipediaPlot": "Donning the masked persona of 'Zero', Lelouch forms the Order of the Black Knights to overthrow Emperor Charles zi Britannia while clashing with his childhood friend Suzaku Kururugi, who pilots the prototype Knightmare Frame Lancelot from within the Britannian military.",
+      "characters": [
+        {
+          "name": "Lelouch Lamperouge",
+          "role": "MAIN",
+          "description": "Exiled 11th Prince of Britannia and student at Ashford Academy who leads the Black Knights under the masked identity Zero."
+        },
+        {
+          "name": "C.C.",
+          "role": "MAIN",
+          "description": "An immortal green-haired witch who loves Pizza Hut cheese pizza and grants Lelouch his contract."
+        },
+        {
+          "name": "Suzaku Kururugi",
+          "role": "MAIN",
+          "description": "Son of Japan's last prime minister and Honorary Britannian soldier who pilots the white seventh-generation Knightmare Frame Lancelot."
+        },
+        {
+          "name": "Kallen Stadtfeld",
+          "role": "SUPPORTING",
+          "description": "Half-Britannian, half-Eleven ace pilot of the Guren Mk-II equipped with a radiation wave surge arm."
+        }
+      ],
+      "fandomTrivia": [
+        "The series was famously sponsored by Pizza Hut in Japan, leading to C.C. constantly ordering boxes of cheese pizza and hugging the mascot Cheese-kun.",
+        "Suzaku's absurdly athletic spinning kicks and the 'Soup Store' ('I'm at soup!') abridged parody are legendary community memes.",
+        "The eye power requires direct eye contact, works only once per individual, and has an effective range of roughly 270 meters."
+      ],
+      "fandomUrl": "https://codegeass.fandom.com/wiki/Lelouch_vi_Britannia"
+    }
+  },
+  {
+    "anilistId": 5114,
+    "malId": 5114,
+    "titleEn": "Fullmetal Alchemist: Brotherhood",
+    "titleRomaji": "Hagane no Renkinjutsushi: Fullmetal Alchemist",
+    "titleJa": "鋼の錬金術師 FULLMETAL ALCHEMIST",
+    "titleUk": "Сталевий алхімік: Братерство",
+    "titleRu": "Стальной алхимик: Братство",
+    "synonyms": ["FMAB", "FMA Brotherhood", "Повнометалевий алхімік"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx5114-KJTQz9AIm6Wk.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 680000,
+      "genres": ["Action", "Adventure", "Drama", "Fantasy"],
+      "tags": ["Military", "Conspiracy", "Steampunk", "Philosophy", "Brothers"],
+      "anilistDescription": "Bound by the Law of Equivalent Exchange, young brothers Edward and Alphonse Elric lose their bodies in a forbidden human transmutation attempt to revive their mother Trisha, setting off across Amestris in search of the Philosopher's Stone.",
+      "wikipediaPlot": "After passing the State Military exam in Central City, Edward and Alphonse uncover a nationwide transmutation circle engineered by the seven Homunculi—Lust, Gluttony, Envy, Greed, Sloth, Wrath, and Pride—serving 'Father' beneath Amestris.",
+      "characters": [
+        {
+          "name": "Edward Elric",
+          "role": "MAIN",
+          "description": "The youngest State Alchemist in history, recognizable by his red coat, automail right arm and left leg, and explosive temper whenever someone calls him short."
+        },
+        {
+          "name": "Alphonse Elric",
+          "role": "MAIN",
+          "description": "Edward's gentle younger brother whose soul is bound via a blood seal inside a towering suit of steel armor."
+        },
+        {
+          "name": "Roy Mustang",
+          "role": "SUPPORTING",
+          "description": "The Flame Alchemist and Colonel who snaps spark-cloth gloves to ignite pinpoint oxygen explosions."
+        },
+        {
+          "name": "Winry Rockbell",
+          "role": "SUPPORTING",
+          "description": "Childhood friend of the Elric brothers and prodigy automail engineer from Resembool who hurls wrenches when Ed breaks his arm."
+        }
+      ],
+      "fandomTrivia": [
+        "Shou Tucker's Sewing-Life Chimera episode featuring Nina and her dog Alexander ('Ed...ward...') remains the most infamous trauma meme in anime fandom.",
+        "Having seen the Gate of Truth, Edward and his teacher Izumi Curtis can perform transmutations simply by clapping their hands together without drawing a circle.",
+        "Major Alex Louis Armstrong's sparkling muscles and techniques have been 'passed down the Armstrong line for generations!'"
+      ],
+      "fandomUrl": "https://fma.fandom.com/wiki/Edward_Elric"
+    }
+  },
+  {
+    "anilistId": 30,
+    "malId": 30,
+    "titleEn": "Neon Genesis Evangelion",
+    "titleRomaji": "Shin Seiki Evangelion",
+    "titleJa": "新世紀エヴァンゲリオン",
+    "titleUk": "Євангеліон нового покоління",
+    "titleRu": "Евангелион",
+    "synonyms": ["NGE", "Eva", "Євангеліон"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx30-wmNoX3m2qT.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 490000,
+      "genres": ["Action", "Drama", "Mecha", "Psychological", "Sci-Fi"],
+      "tags": ["Post-Apocalyptic", "Philosophy", "Coming of Age", "Angels", "Conspiracy"],
+      "anilistDescription": "Fifteen years after the global cataclysm known as Second Impact, 14-year-old Shinji Ikari is summoned to the fortified subterranean city of Tokyo-3 by his estranged father Gendo, Commander of the paramilitary agency NERV.",
+      "wikipediaPlot": "Alongside fellow fourteen-year-old pilots Rei Ayanami and Asuka Langley Soryu, Shinji synchronizes via LCL fluid with bio-mechanical giants to repel monstrous beings called Angels while the shadowy organization SEELE advances the Human Instrumentality Project.",
+      "characters": [
+        {
+          "name": "Shinji Ikari",
+          "role": "MAIN",
+          "description": "The reluctant Third Child and pilot of Unit-01 who struggles with the Hedgehog's Dilemma and his father Gendo's coldness."
+        },
+        {
+          "name": "Asuka Langley Soryu",
+          "role": "MAIN",
+          "description": "Fiery German-Japanese Second Child and proud pilot of the red Unit-02."
+        },
+        {
+          "name": "Rei Ayanami",
+          "role": "MAIN",
+          "description": "Enigmatic blue-haired First Child and pilot of Unit-00."
+        },
+        {
+          "name": "Misato Katsuragi",
+          "role": "MAIN",
+          "description": "NERV Operations Director who takes Shinji and Asuka into her apartment alongside her warm-water penguin Pen Pen."
+        }
+      ],
+      "fandomTrivia": [
+        "The command 'Get in the robot, Shinji!' and the final television episode's round of applause ('Congratulations!') are among the oldest and most famous anime memes.",
+        "When disconnected from their external umbilical power cable, the bio-mechanical units can operate on internal battery power for strictly 5 minutes.",
+        "Episode 4 introduces the psychological concept of the 'Hedgehog's Dilemma'—the closer two people get, the more sharply they wound each other."
+      ],
+      "fandomUrl": "https://evangelion.fandom.com/wiki/Shinji_Ikari"
+    }
+  },
+  {
+    "anilistId": 127230,
+    "malId": 44511,
+    "titleEn": "Chainsaw Man",
+    "titleRomaji": "Chainsaw Man",
+    "titleJa": "チェンソーマン",
+    "titleUk": "Людина-бензопила",
+    "titleRu": "Человек-бензопила",
+    "synonyms": ["CSM", "Чейнсо Мен"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx127230-FlochcFsyoF4.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 540000,
+      "genres": ["Action", "Comedy", "Drama", "Horror", "Supernatural"],
+      "tags": ["Demons", "Urban Fantasy", "Gore", "Anti-Hero", "Public Safety"],
+      "anilistDescription": "Crushed by his late father's Yakuza debt, impoverished teenager Denji hunts Devils alongside his small canine companion Pochita just to afford a slice of bread, until a brutal betrayal merges Pochita's heart with Denji's body.",
+      "wikipediaPlot": "Recruited by the enigmatic Makima into Public Safety Devil Extermination Special Division 4, Denji partners with topknot swordsman Aki Hayakawa and the Blood Fiend Power to hunt fragments of the Gun Devil.",
+      "characters": [
+        {
+          "name": "Denji",
+          "role": "MAIN",
+          "description": "A 16-year-old Devil Hunter whose starter cord on his chest transforms his head and arms into roaring chainsaws."
+        },
+        {
+          "name": "Makima",
+          "role": "MAIN",
+          "description": "High-ranking Public Safety leader with ringed golden eyes who treats Denji like a loyal dog."
+        },
+        {
+          "name": "Power",
+          "role": "MAIN",
+          "description": "Chaotic, narcissistic Blood Fiend who loves her cat Meowy, refuses to eat vegetables, and schemes to win the Nobel Prize."
+        },
+        {
+          "name": "Aki Hayakawa",
+          "role": "MAIN",
+          "description": "Stoic Division 4 hunter contracted with the Curse, Fox ('Kon'), and Future Devils to avenge his family."
+        }
+      ],
+      "fandomTrivia": [
+        "Every single one of the 12 episodes of Season 1 features a completely unique ending theme song and animation sequence by a different artist.",
+        "Unlike high-minded shonen heroes, Denji's initial life goals are simply eating toast with jam and touching a girl.",
+        "Kobeni Higashiyama's panicked breakdowns and her beloved compact car (which becomes more popular than her in character polls) are huge community memes."
+      ],
+      "fandomUrl": "https://chainsaw-man.fandom.com/wiki/Denji"
+    }
+  },
+  {
+    "anilistId": 120377,
+    "malId": 42310,
+    "titleEn": "Cyberpunk: Edgerunners",
+    "titleRomaji": "Cyberpunk: Edgerunners",
+    "titleJa": "サイバーパンク エッジランナーズ",
+    "titleUk": "Кіберпанк: Ті, що біжать по краю",
+    "titleRu": "Киберпанк: Бегущие по краю",
+    "synonyms": ["Edgerunners", "Кіберпанк Еджраннери"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx120377-ayZP8GW4W50e.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 380000,
+      "genres": ["Action", "Drama", "Sci-Fi"],
+      "tags": ["Cyberpunk", "Dystopian", "Crime", "Tragedy", "Cyborg"],
+      "anilistDescription": "After losing his mother Gloria in a drive-by shooting and getting priced out of Arasaka Academy in Night City, street kid David Martinez has a military-grade Sandevistan neural implant grafted onto his spine by a back-alley ripperdoc.",
+      "wikipediaPlot": "Taken under the wing of netrunner Lucy and mercenary crew leader Maine, David rises through Night City's underworld while battling the creeping onset of cyberpsychosis and the corporate machinations of Arasaka and Adam Smasher.",
+      "characters": [
+        {
+          "name": "David Martinez",
+          "role": "MAIN",
+          "description": "A Santo Domingo street kid who wears his mother's neon-yellow EMT jacket and pushes the Sandevistan implant eight times a day."
+        },
+        {
+          "name": "Lucy",
+          "role": "MAIN",
+          "description": "Pastel-haired netrunner who escaped an Arasaka Old Net facility as a child and dreams of escaping Night City to live on the Moon."
+        },
+        {
+          "name": "Rebecca",
+          "role": "SUPPORTING",
+          "description": "Hot-headed, pint-sized solo mercenary with oversized cybernetic hands and a shotgun named Guts."
+        },
+        {
+          "name": "Maine",
+          "role": "SUPPORTING",
+          "description": "Towering veteran edgerunner and father figure to David whose heavy chrome modifications push him toward cyberpsychosis."
+        }
+      ],
+      "fandomTrivia": [
+        "Rosa Walton's song 'I Really Want to Stay at Your House' became synonymous with emotional devastation across the entire anime and gaming community.",
+        "Studio Trigger insisted on keeping the fan-favorite gremlin gunslinger Rebecca in the story even when early corporate notes suggested cutting her character.",
+        "In Night City's Afterlife bar, mercenaries aren't remembered for how they live, but by the custom cocktail named after how they die."
+      ],
+      "fandomUrl": "https://cyberpunk.fandom.com/wiki/David_Martinez"
+    }
+  },
+  {
+    "anilistId": 130003,
+    "malId": 47917,
+    "titleEn": "Bocchi the Rock!",
+    "titleRomaji": "Bocchi the Rock!",
+    "titleJa": "ぼっち・ざ・ろっく！",
+    "titleUk": "Самітниця-рокерка!",
+    "titleRu": "Одинокий рокер!",
+    "synonyms": ["BTR", "Боччі Рок"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx130003-5Y8rY8m9.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 310000,
+      "genres": ["Comedy", "Music", "Slice of Life"],
+      "tags": ["Band", "Rock Music", "Social Anxiety", "Cute Girls Doing Cute Things", "Surreal Comedy"],
+      "anilistDescription": "Painfully shy high school girl Hitori Gotoh spends three years practicing her father's Gibson Les Paul Custom guitar alone in a closet under the internet handle 'guitarhero', until drummer Nijika Ijichi recruits her into Kessoku Band at the live house STARRY in Shimokitazawa.",
+      "wikipediaPlot": "Together with Nijika Ijichi, eccentric bassist Ryo Yamada, and outgoing vocalist-guitarist Ikuyo Kita, Hitori performs inside a ripe mango cardboard box before slowly overcoming her severe social anxiety on stage.",
+      "characters": [
+        {
+          "name": "Hitori Gotoh",
+          "role": "MAIN",
+          "description": "Pink-haired lead guitarist wearing a pink tracksuit and blue-and-yellow cube hairpins who glitches into clay, pixels, or dust whenever spoken to by strangers."
+        },
+        {
+          "name": "Nijika Ijichi",
+          "role": "MAIN",
+          "description": "Energetic drummer of Kessoku Band whose sister Seika manages the Shimokitazawa live house STARRY, known for her triangle dorito ahoge."
+        },
+        {
+          "name": "Ryo Yamada",
+          "role": "MAIN",
+          "description": "Deadpan blue-haired bassist who spends all her allowance on boutique instruments and resorts to eating weeds from the roadside."
+        },
+        {
+          "name": "Ikuyo Kita",
+          "role": "MAIN",
+          "description": "Extroverted rhythm guitarist and vocalist whose blinding social energy ('Kita-aura') makes her bandmates recoil."
+        }
+      ],
+      "fandomTrivia": [
+        "All four members of Kessoku Band share surnames and birthdays inspired by the real-life Japanese alt-rock band Asian Kung-Fu Generation.",
+        "When overwhelmed by social panic, the protagonist's animation style abruptly shifts to low-poly 3D Blender models, melting slime, or live-action footage.",
+        "During Episode 8's stormy concert when a tuning peg slips, the protagonist improvises a slide-guitar solo using an empty sake bottle on the fretboard."
+      ],
+      "fandomUrl": "https://bocchi-the-rock.fandom.com/wiki/Hitori_Gotoh"
+    }
+  },
+  {
+    "anilistId": 113415,
+    "malId": 40748,
+    "titleEn": "Jujutsu Kaisen",
+    "titleRomaji": "Jujutsu Kaisen",
+    "titleJa": "呪術廻戦",
+    "titleUk": "Магічна битва",
+    "titleRu": "Магическая битва",
+    "synonyms": ["JJK", "Дзю-дзюцу Кайсен"],
+    "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx113415-bbBWj4pEFseh.jpg",
+    "screenshots": [],
+    "dossier": {
+      "popularity": 710000,
+      "genres": ["Action", "Drama", "Supernatural"],
+      "tags": ["Urban Fantasy", "Curses", "Martial Arts", "School", "Exorcism"],
+      "anilistDescription": "High school athlete Yuji Itadori swallows a rotting Special Grade talisman—a severed finger belonging to Ryomen Sukuna—to save his Occult Club friends and Megumi Fushiguro, becoming the living vessel of the King of Curses.",
+      "wikipediaPlot": "Under the mentorship of blindfolded Special Grade sorcerer Satoru Gojo, Yuji enrolls at Tokyo Prefectural Jujutsu High School alongside Megumi Fushiguro and Nobara Kugisaki to locate and consume all twenty of Sukuna's indestructible fingers.",
+      "characters": [
+        {
+          "name": "Yuji Itadori",
+          "role": "MAIN",
+          "description": "Superhumanly strong teenager from Sendai who channels Cursed Energy into Black Flash strikes while housing Ryomen Sukuna."
+        },
+        {
+          "name": "Satoru Gojo",
+          "role": "MAIN",
+          "description": "The strongest modern sorcerer who wears a black blindfold over his Six Eyes and wields the Limitless technique and Infinite Void."
+        },
+        {
+          "name": "Megumi Fushiguro",
+          "role": "MAIN",
+          "description": "First-year sorcerer of the Zenin bloodline who summons Ten Shadows shikigami including Divine Dogs and Eight-Handled Sword Divergent Sila Divine General Mahoraga."
+        },
+        {
+          "name": "Aoi Todo",
+          "role": "SUPPORTING",
+          "description": "Kyoto third-year powerhouse obsessed with tall idol Takada-chan who asks every opponent their taste in women before activating Boogie Woogie."
+        }
+      ],
+      "fandomTrivia": [
+        "Aoi Todo immediately decides whether someone is his 'besto friendo' (or mortal enemy) by asking: 'What kind of woman is your type?'",
+        "The pinnacle of jujutsu sorcery—Domain Expansion (Ryoiki Tenkai)—constructs an innate barrier environment where every technique is guaranteed to hit.",
+        "Megumi Fushiguro attempting to summon Mahoraga ('With this treasure, I summon...') at the slightest inconvenience is one of the community's biggest memes."
+      ],
+      "fandomUrl": "https://jujutsu-kaisen.fandom.com/wiki/Yuji_Itadori"
+    }
+  }
+]

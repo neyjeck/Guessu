@@ -263,3 +263,63 @@ Verifies the 6-digit password reset OTP (`otp:reset:<email>`), hashes `newPasswo
 2. When any protected API request returns `401 Unauthorized` (excluding `/auth/login`, `/auth/register`, `/auth/refresh`, `/auth/logout`), the response interceptor triggers a shared `POST /api/auth/refresh` request.
 3. Upon successful token rotation, the browser updates its `HttpOnly` cookies and Axios transparently retries the original request once (`_retry = true`).
 4. If `POST /api/auth/refresh` fails with `401`, the user state in `AuthContext` resets to `null` (Guest mode).
+
+---
+
+## 5. Multilingual Anime Search & Random Selection (`AnimeModule`)
+
+### `GET /api/anime/search?q=<query>&limit=10`
+
+Performs fast case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_trgm` trigram similarity (`SIMILARITY` & `WORD_SIMILARITY`) matching across `titleEn`, `titleRomaji`, `titleUk`, `titleRu`, `titleJa`, and `synonyms`.
+
+- **Query Parameters (`SearchAnimeDto`):**
+  - `q`: Search query string (trimmed, **minimum 2 characters**).
+  - `limit`: Optional maximum results (default `10`, range `1–20`).
+- **Ranking Priority:**
+  1. Direct prefix matches (`ILIKE 'q%'`) on any localized title (`+2.0` score boost) — e.g. typing `"guil"` immediately ranks `"Guilty Crown"` at `#1`.
+  2. Direct substring matches (`ILIKE '%q%'`) on any localized title or `synonyms` (`+1.0` score boost).
+  3. Highest `SIMILARITY()` / `WORD_SIMILARITY()` across `titleRomaji`, `titleEn`, `titleUk`, `titleRu`, and `synonyms`.
+- **Response (`200 OK` — `AnimeSearchResult[]`):**
+  ```json
+  [
+    {
+      "id": 1,
+      "anilistId": 10793,
+      "titleEn": "Guilty Crown",
+      "titleRomaji": "Guilty Crown",
+      "titleJa": "ギルティクラウン",
+      "titleUk": "Корона грішника",
+      "titleRu": "Корона грешника",
+      "synonyms": ["GC", "Корона провини"],
+      "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx10793-f576138c.jpg"
+    }
+  ]
+  ```
+
+### `AnimeService.getRandomAnime(excludeIds: string[])`
+
+Selects a completely random `Anime` record from PostgreSQL excluding only the recently played IDs passed in `excludeIds` (no rigid popularity tier restrictions). Falls back to the full catalog if all existing anime IDs are in `excludeIds`.
+
+---
+
+## 6. On-the-Fly AI Clue Generation (`AiModule` / `AiClueService`)
+
+### `AiClueService.generateClues(anime: Anime, lang: 'uk' | 'en' | 'ru')`
+
+Generates **6 fresh progressive clues on the fly** (`temperature: 0.9`) from the anime's 3-source `dossier` (AniList synopsis/characters/tags + Wikipedia plot summary + Fandom Wiki trivia/memes), written natively in the user's selected UI language (`uk`, `en`, or `ru`).
+
+- **Strict JSON Output Schema (`GeneratedClueSet`):**
+  ```json
+  {
+    "hard": ["Deep lore, Fandom trivia/meme, or worldbuilding mechanic clue 1", "Hard clue 2"],
+    "medium": ["Faction, secondary character, or signature power clue 3", "Medium clue 4"],
+    "easy": ["Main character names, catchphrases, or iconic plot hook clue 5", "Easy clue 6"]
+  }
+  ```
+- **Prompt Rules:**
+  - Character names, factions, world terms, specific abilities, and Fandom memes/trivia **ARE ALLOWED and encouraged**.
+  - Only the exact title of the anime itself (across all languages/synonyms) is strictly forbidden and scrubbed (`[***]`).
+- **Resilience & Multi-Tier Fallback:**
+  1. **Primary LLM:** Groq (`llama-3.3-70b-versatile`) via `GROQ_API_KEY`.
+  2. **Fallback LLM:** Google Gemini (`gemini-2.5-flash`) via `GEMINI_API_KEY` on rate-limit (`429`) or network errors.
+  3. **Emergency Redis Cache:** Last valid generated clue set per `(animeId, lang)` is cached in Redis (`ai_clues:backup:<animeId>:<lang>`, 30d TTL) and served if both LLM providers are unreachable, with deterministic dossier synthesis as final fallback.

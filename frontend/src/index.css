@@ -207,6 +207,11 @@
   border-radius: 0.5rem;
   border: 1px solid #374151;
   background: #0b0f19;
+  transition: border-color 0.15s ease;
+}
+
+.search-box:focus-within {
+  border-color: #a855f7;
 }
 
 .search-box input {
@@ -218,31 +223,215 @@
   font-size: 0.95rem;
 }
 
-.suggestions-list {
-  list-style: none;
-  margin-top: 0.5rem;
+/* Language Switcher */
+.lang-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.2rem 0.35rem;
+  border-radius: 999px;
+  background: #111827;
   border: 1px solid #1f2937;
-  border-radius: 0.5rem;
+}
+
+.lang-switcher-icon {
+  color: #9ca3af;
+  margin: 0 0.25rem;
+}
+
+.lang-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lang-btn:hover {
+  color: #f3f4f6;
+}
+
+.lang-btn.active {
+  background: #9333ea;
+  color: #ffffff;
+}
+
+/* Autocomplete Dropdown */
+.autocomplete-container {
+  position: relative;
+}
+
+.autocomplete-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0.15rem;
+  border-radius: 0.25rem;
+}
+
+.autocomplete-clear-btn:hover {
+  color: #f3f4f6;
+}
+
+.spin-icon {
+  animation: spin 0.9s linear infinite;
+  color: #a855f7;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  right: 0;
+  z-index: 30;
   background: #0b0f19;
+  border: 1px solid #374151;
+  border-radius: 0.65rem;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.55);
   overflow: hidden;
 }
 
-.suggestions-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid #1f2937;
-  font-size: 0.875rem;
+.autocomplete-list {
+  list-style: none;
+  max-height: 340px;
+  overflow-y: auto;
 }
 
-.suggestions-list li:last-child {
+.autocomplete-option {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #1f2937;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.autocomplete-option:last-child {
   border-bottom: none;
 }
 
-.suggestions-list li span {
+.autocomplete-option.active,
+.autocomplete-option:hover {
+  background: rgba(168, 85, 247, 0.16);
+}
+
+.autocomplete-cover {
+  width: 38px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 0.35rem;
+  background: #1f2937;
+  flex-shrink: 0;
+}
+
+.autocomplete-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.autocomplete-primary-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #f9fafb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-subtitles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.autocomplete-subtitle-chip {
+  font-size: 0.76rem;
   color: #9ca3af;
-  font-size: 0.8rem;
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.autocomplete-highlight {
+  background: rgba(168, 85, 247, 0.35);
+  color: #f3e8ff;
+  border-radius: 0.2rem;
+  padding: 0 0.12rem;
+  font-weight: 700;
+}
+
+.autocomplete-footer {
+  padding: 0.4rem 0.75rem;
+  background: #111827;
+  border-top: 1px solid #1f2937;
+  font-size: 0.72rem;
+  color: #6b7280;
+  text-align: right;
+}
+
+.autocomplete-empty {
+  padding: 0.85rem;
+  font-size: 0.85rem;
+  color: #9ca3af;
+  text-align: center;
+}
+
+.selected-anime-preview {
+  margin-top: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.55rem;
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
+.selected-anime-cover {
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 0.35rem;
+}
+
+.selected-anime-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.88rem;
+}
+
+.selected-anime-caption {
+  font-size: 0.74rem;
+  color: #c084fc;
+}
+
+.selected-anime-sub {
+  font-size: 0.78rem;
+  color: #9ca3af;
 }
 
 /* Auth Modal */

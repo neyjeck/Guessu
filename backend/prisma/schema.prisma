@@ -55,7 +55,7 @@ model Anime {
   synonyms     String[]      @default([])
   coverUrl     String
   screenshots  String[]      @default([])
-  clues        Json
+  dossier      Json
   gameSessions GameSession[]
 }
 
