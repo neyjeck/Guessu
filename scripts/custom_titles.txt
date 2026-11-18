@@ -1,0 +1,19 @@
+# Custom Anime Titles or AniList IDs (one per line)
+# Entries listed here are guaranteed to be scraped and included alongside the Top 300+ popular anime.
+# You can specify either an exact AniList numeric ID (e.g. 10793) or an anime title search string.
+
+Guilty Crown
+Sousou no Frieren
+Steins;Gate
+Code Geass: Hangyaku no Lelouch
+Shingeki no Kyojin
+Death Note
+Shin Seiki Evangelion
+Cyberpunk: Edgerunners
+Bocchi the Rock!
+Chainsaw Man
+Monster
+Tengen Toppa Gurren Lagann
+Mahou Shoujo Madoka☆Magica
+Violet Evergarden
+Vinland Saga

@@ -4,7 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Anime, GameMode, GameSession, GameStatus } from '@prisma/client';
+import {
+  AiClueService,
+  GeneratedClueSet,
+  SupportedLanguage,
+} from '../ai/ai-clue.service';
+import { AnimeService } from '../anime/anime.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { UsersService } from '../users/users.service';
 import { StartGameDto } from './dto/start-game.dto';
 import { SubmitGuessDto } from './dto/submit-guess.dto';
@@ -23,32 +30,29 @@ export interface SafeGameSessionView {
     titleEn: string | null;
     titleRomaji: string;
     titleUk: string | null;
+    titleRu: string | null;
     coverUrl: string;
   } | null;
 }
 
 @Injectable()
 export class GameService {
-  private static readonly MAX_STEPS = 5;
+  private static readonly MAX_STEPS = 6;
+  private static readonly SESSION_CLUES_TTL_SECONDS = 24 * 60 * 60;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
+    private readonly animeService: AnimeService,
+    private readonly aiClueService: AiClueService,
+    private readonly redisService: RedisService,
   ) {}
 
   async startSession(dto: StartGameDto): Promise<SafeGameSessionView> {
-    const totalCount = await this.prisma.anime.count();
-    if (totalCount === 0) {
-      throw new BadRequestException(
-        'No anime entries available in database. Seed the database first.',
-      );
-    }
-
-    const randomOffset = Math.floor(Math.random() * totalCount);
-    const [randomAnime] = await this.prisma.anime.findMany({
-      skip: randomOffset,
-      take: 1,
-    });
+    const lang: SupportedLanguage = dto.lang ?? 'en';
+    const randomAnime = await this.animeService.getRandomAnime(
+      dto.excludeIds ?? [],
+    );
 
     const session = await this.prisma.gameSession.create({
       data: {
@@ -64,7 +68,15 @@ export class GameService {
       },
     });
 
-    return this.toSafeClientView(session, session.targetAnime);
+    let sessionClues: string[] = [];
+    if (dto.mode !== GameMode.SCREENSHOT) {
+      const generatedSet: GeneratedClueSet =
+        await this.aiClueService.generateClues(session.targetAnime, lang);
+      sessionClues = this.aiClueService.flattenClueSet(generatedSet);
+      await this.storeSessionClues(session.id, sessionClues, lang);
+    }
+
+    return this.toSafeClientView(session, session.targetAnime, sessionClues);
   }
 
   async getSession(sessionId: string): Promise<SafeGameSessionView> {
@@ -77,7 +89,12 @@ export class GameService {
       throw new NotFoundException(`GameSession "${sessionId}" not found`);
     }
 
-    return this.toSafeClientView(session, session.targetAnime);
+    const sessionClues = await this.loadOrGenerateSessionClues(
+      session.id,
+      session.targetAnime,
+    );
+
+    return this.toSafeClientView(session, session.targetAnime, sessionClues);
   }
 
   async submitGuess(
@@ -133,7 +150,62 @@ export class GameService {
       );
     }
 
-    return this.toSafeClientView(updated, updated.targetAnime);
+    const sessionClues = await this.loadOrGenerateSessionClues(
+      updated.id,
+      updated.targetAnime,
+    );
+
+    return this.toSafeClientView(updated, updated.targetAnime, sessionClues);
+  }
+
+  private buildSessionCluesKey(sessionId: string): string {
+    return `game_session_clues:${sessionId}`;
+  }
+
+  private async storeSessionClues(
+    sessionId: string,
+    clues: string[],
+    lang: SupportedLanguage,
+  ): Promise<void> {
+    try {
+      await this.redisService
+        .getClient()
+        .set(
+          this.buildSessionCluesKey(sessionId),
+          JSON.stringify({ lang, clues }),
+          'EX',
+          GameService.SESSION_CLUES_TTL_SECONDS,
+        );
+    } catch {
+      // Non-fatal if Redis write fails
+    }
+  }
+
+  private async loadOrGenerateSessionClues(
+    sessionId: string,
+    targetAnime: Anime,
+  ): Promise<string[]> {
+    try {
+      const raw = await this.redisService
+        .getClient()
+        .get(this.buildSessionCluesKey(sessionId));
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          lang?: SupportedLanguage;
+          clues?: string[];
+        };
+        if (Array.isArray(parsed.clues) && parsed.clues.length > 0) {
+          return parsed.clues;
+        }
+      }
+    } catch {
+      // Fallback to generating clues
+    }
+
+    const generated = await this.aiClueService.generateClues(targetAnime, 'en');
+    const clues = this.aiClueService.flattenClueSet(generated);
+    await this.storeSessionClues(sessionId, clues, 'en');
+    return clues;
   }
 
   /**
@@ -143,16 +215,14 @@ export class GameService {
   private toSafeClientView(
     session: GameSession,
     targetAnime: Anime,
+    sessionClues: string[],
   ): SafeGameSessionView {
-    const rawClues = Array.isArray(targetAnime.clues)
-      ? (targetAnime.clues as string[])
-      : [];
     const sliceEnd = session.currentStep + 1;
 
     const unlockedClues =
       session.mode === GameMode.SCREENSHOT
         ? []
-        : rawClues.slice(0, sliceEnd);
+        : sessionClues.slice(0, sliceEnd);
 
     const unlockedScreenshots =
       session.mode === GameMode.CLUES
@@ -176,6 +246,7 @@ export class GameService {
             titleEn: targetAnime.titleEn,
             titleRomaji: targetAnime.titleRomaji,
             titleUk: targetAnime.titleUk,
+            titleRu: targetAnime.titleRu,
             coverUrl: targetAnime.coverUrl,
           }
         : null,

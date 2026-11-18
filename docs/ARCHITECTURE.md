@@ -22,7 +22,8 @@ backend/src/
 ├── mail/          # Real Nodemailer SMTP MailModule & MailService (OTP & reset templates)
 ├── auth/          # JWT + Redis session auth, OtpService, Argon2id, Google OAuth, HttpOnly cookies
 ├── users/         # User profile CRUD, UserResponseEntity (@Exclude), streak stats
-├── anime/         # Multilingual anime catalog & pg_trgm fuzzy search
+├── anime/         # Multilingual anime catalog & pg_trgm + substring fuzzy search
+├── ai/            # On-the-fly AI clue generator (Groq llama-3.3-70b-versatile + Gemini 2.5 Flash + Redis backup)
 ├── game/          # Session lifecycle, clue/frame reveal, anti-cheat verification
 └── leaderboard/   # Global rating & maxStreak ranking queries
 ```

@@ -2,34 +2,38 @@ import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Flame,
+  Globe,
   Image,
   LogIn,
   LogOut,
   MailCheck,
-  Search,
   Sparkles,
   Trophy,
   User,
   UserPlus,
 } from 'lucide-react';
-import { apiClient } from './api/client';
+import {
+  AnimeAutocompleteInput,
+  AnimeSearchResultItem,
+} from './components/AnimeAutocompleteInput';
 import { AuthModal, AuthTab } from './components/AuthModal';
 import { useAuth } from './context/AuthContext';
+import { AppLanguage, useLanguage } from './context/LanguageContext';
 
 type GameMode = 'CLUES' | 'SCREENSHOT' | 'ENDLESS';
 
-interface AnimeSuggestion {
-  id: number;
-  titleEn: string | null;
-  titleRomaji: string;
-  titleUk: string | null;
-}
+const LANGUAGE_OPTIONS: Array<{ code: AppLanguage; label: string }> = [
+  { code: 'uk', label: 'UA' },
+  { code: 'en', label: 'EN' },
+  { code: 'ru', label: 'RU' },
+];
 
 export function App() {
   const { user, isLoading, authError, logout } = useAuth();
+  const { lang, setLang, t } = useLanguage();
   const [mode, setMode] = useState<GameMode>('CLUES');
-  const [query, setQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<AnimeSuggestion[]>([]);
+  const [selectedAnime, setSelectedAnime] =
+    useState<AnimeSearchResultItem | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
   const [authModalEmail, setAuthModalEmail] = useState<string>('');
@@ -47,39 +51,42 @@ export function App() {
     setAuthModalOpen(true);
   };
 
-  const handleSearchChange = async (value: string) => {
-    setQuery(value);
-    if (value.trim().length < 2) {
-      setSuggestions([]);
-      return;
-    }
-    try {
-      const response = await apiClient.get<AnimeSuggestion[]>('/anime/search', {
-        params: { q: value, limit: 6 },
-      });
-      setSuggestions(response.data);
-    } catch {
-      setSuggestions([]);
-    }
-  };
-
   return (
     <div className="app-shell">
       <header className="top-nav">
         <div className="brand">
           <Sparkles size={22} />
-          <span>Anime Guesser</span>
+          <span>{t.brandTitle}</span>
         </div>
         <div className="nav-stats">
+          <div
+            className="lang-switcher"
+            role="group"
+            aria-label="Interface and AI Clue Language"
+          >
+            <Globe size={14} className="lang-switcher-icon" />
+            {LANGUAGE_OPTIONS.map((opt) => (
+              <button
+                key={opt.code}
+                type="button"
+                className={`lang-btn ${lang === opt.code ? 'active' : ''}`}
+                onClick={() => setLang(opt.code)}
+                aria-pressed={lang === opt.code}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
           <span className="pill">
-            <Flame size={16} /> Streak: {user ? user.currentStreak : 0}
+            <Flame size={16} /> {t.streakLabel}: {user ? user.currentStreak : 0}
           </span>
           <span className="pill">
             <Trophy size={16} /> {user ? user.rating : 1000} MMR
           </span>
 
           {isLoading ? (
-            <span className="pill">Loading...</span>
+            <span className="pill">{t.loading}</span>
           ) : user ? (
             <>
               <span className="pill user-pill" title={user.badgeTitle}>
@@ -92,7 +99,7 @@ export function App() {
                 onClick={() => void logout()}
               >
                 <LogOut size={15} />
-                Sign Out
+                {t.signOut}
               </button>
             </>
           ) : (
@@ -103,7 +110,7 @@ export function App() {
                 onClick={() => openAuthModal('login')}
               >
                 <LogIn size={15} />
-                Sign In
+                {t.signIn}
               </button>
               <button
                 type="button"
@@ -111,7 +118,7 @@ export function App() {
                 onClick={() => openAuthModal('register')}
               >
                 <UserPlus size={15} />
-                Register
+                {t.register}
               </button>
             </>
           )}
@@ -119,13 +126,17 @@ export function App() {
       </header>
 
       {user && !user.isEmailVerified && (
-        <div className="verify-email-banner" role="region" aria-label="Email verification notice">
+        <div
+          className="verify-email-banner"
+          role="region"
+          aria-label="Email verification notice"
+        >
           <div className="verify-email-banner-text">
             <AlertTriangle size={18} />
             <span>
-              Your email address (<strong>{user.email}</strong>) is not verified
-              yet. Verify your email to secure your account and unlock full
-              recovery features.
+              {t.verifyBannerPrefix}
+              <strong>{user.email}</strong>
+              {t.verifyBannerSuffix}
             </span>
           </div>
           <button
@@ -134,7 +145,7 @@ export function App() {
             onClick={() => openAuthModal('verify-email', user.email)}
           >
             <MailCheck size={15} />
-            Verify Email
+            {t.verifyEmailBtn}
           </button>
         </div>
       )}
@@ -146,55 +157,61 @@ export function App() {
             className={mode === 'CLUES' ? 'active' : ''}
             onClick={() => setMode('CLUES')}
           >
-            <Sparkles size={16} /> AI Clues
+            <Sparkles size={16} /> {t.modeAiClues}
           </button>
           <button
             type="button"
             className={mode === 'SCREENSHOT' ? 'active' : ''}
             onClick={() => setMode('SCREENSHOT')}
           >
-            <Image size={16} /> Frame Guess
+            <Image size={16} /> {t.modeFrameGuess}
           </button>
           <button
             type="button"
             className={mode === 'ENDLESS' ? 'active' : ''}
             onClick={() => setMode('ENDLESS')}
           >
-            <Flame size={16} /> Endless Streak
+            <Flame size={16} /> {t.modeEndlessStreak}
           </button>
         </section>
 
         <section className="deduction-grid">
           <div className="clue-panel">
-            <h2>Progressive Clues ({mode})</h2>
-            <p className="clue-item">
-              Step 1: Non-cliche atmospheric AI clue appears directly beside your search input.
-            </p>
+            <h2>
+              {t.progressiveCluesTitle} ({mode})
+            </h2>
+            <p className="clue-item">{t.cluePlaceholderStep1}</p>
           </div>
 
           <div className="search-panel">
             <label htmlFor="anime-search" className="search-label">
-              Multilingual Search (EN / Romaji / JA / UK / RU)
+              {t.searchLabel}
             </label>
-            <div className="search-box">
-              <Search size={18} />
-              <input
-                id="anime-search"
-                type="text"
-                value={query}
-                onChange={(e) => void handleSearchChange(e.target.value)}
-                placeholder="Type anime title in any supported language..."
-              />
-            </div>
-            {suggestions.length > 0 && (
-              <ul className="suggestions-list">
-                {suggestions.map((item) => (
-                  <li key={item.id}>
-                    <strong>{item.titleEn ?? item.titleRomaji}</strong>
-                    <span>{item.titleUk ?? item.titleRomaji}</span>
-                  </li>
-                ))}
-              </ul>
+            <AnimeAutocompleteInput
+              onSelect={(anime) => setSelectedAnime(anime)}
+            />
+            {selectedAnime && (
+              <div className="selected-anime-preview">
+                <img
+                  src={selectedAnime.coverUrl}
+                  alt={selectedAnime.titleEn ?? selectedAnime.titleRomaji}
+                  className="selected-anime-cover"
+                />
+                <div className="selected-anime-info">
+                  <span className="selected-anime-caption">
+                    {t.selectedAnimeLabel}
+                  </span>
+                  <strong>
+                    {(lang === 'uk' && selectedAnime.titleUk) ||
+                      (lang === 'ru' && selectedAnime.titleRu) ||
+                      selectedAnime.titleEn ||
+                      selectedAnime.titleRomaji}
+                  </strong>
+                  <span className="selected-anime-sub">
+                    {selectedAnime.titleRomaji}
+                  </span>
+                </div>
+              </div>
             )}
           </div>
         </section>
