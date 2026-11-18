@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Award,
   Flame,
   Globe,
-  Image,
   LogIn,
   LogOut,
   MailCheck,
@@ -12,15 +12,10 @@ import {
   User,
   UserPlus,
 } from 'lucide-react';
-import {
-  AnimeAutocompleteInput,
-  AnimeSearchResultItem,
-} from './components/AnimeAutocompleteInput';
 import { AuthModal, AuthTab } from './components/AuthModal';
 import { useAuth } from './context/AuthContext';
 import { AppLanguage, useLanguage } from './context/LanguageContext';
-
-type GameMode = 'CLUES' | 'SCREENSHOT' | 'ENDLESS';
+import { SoloGameTest, UserGameStats } from './pages/SoloGameTest';
 
 const LANGUAGE_OPTIONS: Array<{ code: AppLanguage; label: string }> = [
   { code: 'uk', label: 'UA' },
@@ -31,12 +26,22 @@ const LANGUAGE_OPTIONS: Array<{ code: AppLanguage; label: string }> = [
 export function App() {
   const { user, isLoading, authError, logout } = useAuth();
   const { lang, setLang, t } = useLanguage();
-  const [mode, setMode] = useState<GameMode>('CLUES');
-  const [selectedAnime, setSelectedAnime] =
-    useState<AnimeSearchResultItem | null>(null);
+  const [liveStats, setLiveStats] = useState<UserGameStats | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
   const [authModalEmail, setAuthModalEmail] = useState<string>('');
+
+  useEffect(() => {
+    if (user) {
+      setLiveStats({
+        currentStreak: user.currentStreak,
+        maxStreak: user.maxStreak,
+        rating: user.rating,
+      });
+    } else {
+      setLiveStats(null);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (authError) {
@@ -50,6 +55,10 @@ export function App() {
     setAuthModalEmail(targetEmail);
     setAuthModalOpen(true);
   };
+
+  const displayStreak = liveStats?.currentStreak ?? user?.currentStreak ?? 0;
+  const displayMaxStreak = liveStats?.maxStreak ?? user?.maxStreak ?? 0;
+  const displayRating = liveStats?.rating ?? user?.rating ?? 1000;
 
   return (
     <div className="app-shell">
@@ -79,10 +88,15 @@ export function App() {
           </div>
 
           <span className="pill">
-            <Flame size={16} /> {t.streakLabel}: {user ? user.currentStreak : 0}
+            <Flame size={16} /> {t.streakLabel}: <strong>{displayStreak}</strong>
           </span>
           <span className="pill">
-            <Trophy size={16} /> {user ? user.rating : 1000} MMR
+            <Award size={16} /> {t.bestStreakLabel}:{' '}
+            <strong>{displayMaxStreak}</strong>
+          </span>
+          <span className="pill">
+            <Trophy size={16} /> {t.ratingLabel}:{' '}
+            <strong>{displayRating}</strong>
           </span>
 
           {isLoading ? (
@@ -151,70 +165,33 @@ export function App() {
       )}
 
       <main className="arena">
-        <section className="mode-selector">
-          <button
-            type="button"
-            className={mode === 'CLUES' ? 'active' : ''}
-            onClick={() => setMode('CLUES')}
-          >
-            <Sparkles size={16} /> {t.modeAiClues}
-          </button>
-          <button
-            type="button"
-            className={mode === 'SCREENSHOT' ? 'active' : ''}
-            onClick={() => setMode('SCREENSHOT')}
-          >
-            <Image size={16} /> {t.modeFrameGuess}
-          </button>
-          <button
-            type="button"
-            className={mode === 'ENDLESS' ? 'active' : ''}
-            onClick={() => setMode('ENDLESS')}
-          >
-            <Flame size={16} /> {t.modeEndlessStreak}
-          </button>
-        </section>
-
-        <section className="deduction-grid">
-          <div className="clue-panel">
-            <h2>
-              {t.progressiveCluesTitle} ({mode})
-            </h2>
-            <p className="clue-item">{t.cluePlaceholderStep1}</p>
+        {user ? (
+          <SoloGameTest onStatsUpdate={(stats) => setLiveStats(stats)} />
+        ) : (
+          <div className="guest-auth-card">
+            <Sparkles size={32} className="guest-auth-icon" />
+            <h2>{t.authPromptTitle}</h2>
+            <p>{t.authPromptDesc}</p>
+            <div className="guest-auth-actions">
+              <button
+                type="button"
+                className="nav-auth-btn primary"
+                onClick={() => openAuthModal('login')}
+              >
+                <LogIn size={16} />
+                {t.signIn}
+              </button>
+              <button
+                type="button"
+                className="nav-auth-btn secondary"
+                onClick={() => openAuthModal('register')}
+              >
+                <UserPlus size={16} />
+                {t.register}
+              </button>
+            </div>
           </div>
-
-          <div className="search-panel">
-            <label htmlFor="anime-search" className="search-label">
-              {t.searchLabel}
-            </label>
-            <AnimeAutocompleteInput
-              onSelect={(anime) => setSelectedAnime(anime)}
-            />
-            {selectedAnime && (
-              <div className="selected-anime-preview">
-                <img
-                  src={selectedAnime.coverUrl}
-                  alt={selectedAnime.titleEn ?? selectedAnime.titleRomaji}
-                  className="selected-anime-cover"
-                />
-                <div className="selected-anime-info">
-                  <span className="selected-anime-caption">
-                    {t.selectedAnimeLabel}
-                  </span>
-                  <strong>
-                    {(lang === 'uk' && selectedAnime.titleUk) ||
-                      (lang === 'ru' && selectedAnime.titleRu) ||
-                      selectedAnime.titleEn ||
-                      selectedAnime.titleRomaji}
-                  </strong>
-                  <span className="selected-anime-sub">
-                    {selectedAnime.titleRomaji}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
+        )}
       </main>
 
       <AuthModal

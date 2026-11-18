@@ -434,6 +434,367 @@
   color: #9ca3af;
 }
 
+/* Solo Game Minimalist Test Bench */
+.solo-test-bench {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.clue-loading-card,
+.guest-auth-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  padding: 2.75rem 1.5rem;
+  border-radius: 0.85rem;
+  background: #111827;
+  border: 1px solid #1f2937;
+  text-align: center;
+  color: #d1d5db;
+}
+
+.guest-auth-icon {
+  color: #a855f7;
+}
+
+.guest-auth-card p {
+  max-width: 520px;
+  color: #9ca3af;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.guest-auth-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+
+.clue-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.clue-panel-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #f3f4f6;
+}
+
+.step-counter-pill {
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.16);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  color: #e9d5ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.clues-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.clues-cards-list.compact {
+  gap: 0.55rem;
+}
+
+.clue-card {
+  padding: 0.9rem 1rem;
+  border-radius: 0.65rem;
+  background: #0b0f19;
+  border: 1px solid #1f2937;
+}
+
+.clue-card.unrevealed {
+  opacity: 0.88;
+  border-style: dashed;
+}
+
+.clue-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.45rem;
+}
+
+.clue-step-tag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.difficulty-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.14rem 0.5rem;
+  border-radius: 999px;
+  letter-spacing: 0.05em;
+}
+
+.difficulty-hard {
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.difficulty-medium {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fde68a;
+}
+
+.difficulty-easy {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #6ee7b7;
+}
+
+.clue-card-text {
+  font-size: 0.93rem;
+  line-height: 1.55;
+  color: #e5e7eb;
+}
+
+.guess-controls-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.game-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.game-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.62rem 1rem;
+  border-radius: 0.55rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.game-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.game-btn.primary {
+  flex: 1;
+  background: #9333ea;
+  border: 1px solid #a855f7;
+  color: #ffffff;
+}
+
+.game-btn.primary:hover:not(:disabled) {
+  background: #7e22ce;
+}
+
+.game-btn.secondary {
+  flex: 1;
+  background: #0b0f19;
+  border: 1px solid #374151;
+  color: #e5e7eb;
+}
+
+.game-btn.secondary:hover:not(:disabled) {
+  border-color: #a855f7;
+}
+
+.game-btn.danger {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.game-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+}
+
+.wrong-guesses-box {
+  margin-top: 0.35rem;
+  padding: 0.85rem;
+  border-radius: 0.6rem;
+  background: #0b0f19;
+  border: 1px solid #1f2937;
+}
+
+.wrong-guesses-box h4 {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #9ca3af;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.wrong-guesses-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.wrong-guesses-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  color: #fca5a5;
+}
+
+.wrong-guess-icon {
+  color: #ef4444;
+  flex-shrink: 0;
+}
+
+/* Round Result Card */
+.round-result-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.65rem;
+}
+
+.result-won .result-header {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.result-lost .result-header {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.result-icon-won {
+  color: #34d399;
+  flex-shrink: 0;
+}
+
+.result-icon-lost {
+  color: #f87171;
+  flex-shrink: 0;
+}
+
+.result-header h3 {
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #f9fafb;
+}
+
+.earned-points-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #6ee7b7;
+}
+
+.revealed-anime-card {
+  display: flex;
+  gap: 1rem;
+  padding: 0.9rem;
+  border-radius: 0.65rem;
+  background: #0b0f19;
+  border: 1px solid #1f2937;
+}
+
+.revealed-anime-cover {
+  width: 84px;
+  height: 118px;
+  object-fit: cover;
+  border-radius: 0.45rem;
+  flex-shrink: 0;
+}
+
+.revealed-anime-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.revealed-primary-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f3f4f6;
+}
+
+.revealed-localized-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.revealed-localized-list strong {
+  color: #d1d5db;
+}
+
+.remaining-clues-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.remaining-clues-section h5 {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.next-anime-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.2rem;
+  border-radius: 0.6rem;
+  border: 1px solid #a855f7;
+  background: linear-gradient(135deg, #9333ea 0%, #7e22ce 100%);
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.next-anime-btn:hover {
+  opacity: 0.92;
+}
+
 /* Auth Modal */
 .modal-backdrop {
   position: fixed;
