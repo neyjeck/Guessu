@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Anime } from '@prisma/client';
 import { RedisService } from '../redis/redis.service';
@@ -19,8 +19,11 @@ export interface AnimeDossierCharacter {
 
 export interface AnimeDossier {
   popularity?: number;
+  seasonYear?: number | null;
+  studios?: string[];
   genres?: string[];
   tags?: string[];
+  description?: string;
   anilistDescription?: string;
   wikipediaPlot?: string;
   characters?: AnimeDossierCharacter[];
@@ -29,9 +32,11 @@ export interface AnimeDossier {
 }
 
 const CYRILLIC_RE = /[А-Яа-яЁёІіЇїЄєҐґ]/;
+const BANNED_GENRE_TEMPLATE_RE =
+  /(?:у жанрах\s*:|в жанрах\s*:|core genre blend\s*:|primary genres\s*:|основні жанри\s*:|основные жанры\s*:)/i;
 
 @Injectable()
-export class AiClueService {
+export class AiClueService implements OnModuleInit {
   private readonly logger = new Logger(AiClueService.name);
   private static readonly REDIS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
   private static readonly REQUEST_TIMEOUT_MS = 12_000;
@@ -41,15 +46,32 @@ export class AiClueService {
     private readonly redisService: RedisService,
   ) {}
 
+  onModuleInit(): void {
+    const groqConfigured = this.hasValidApiKey('GROQ_API_KEY', 'gsk_your_');
+    const geminiConfigured = this.hasValidApiKey('GEMINI_API_KEY', 'your_');
+    if (!groqConfigured && !geminiConfigured) {
+      this.logger.error(
+        'Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in backend/.env! ' +
+          'Clue generation will fall back to offline dossier synthesis until a valid key is set.',
+      );
+    } else {
+      this.logger.log(
+        `AI clue providers ready: Groq=${groqConfigured ? 'configured' : 'missing'}, ` +
+          `Gemini=${geminiConfigured ? 'configured' : 'missing'}`,
+      );
+    }
+  }
+
   /**
    * Generates 6 progressive clues on the fly (temperature: 0.9) in strict JSON format:
    * { "hard": [string, string], "medium": [string, string], "easy": [string, string] }
    * written natively and strictly in the requested UI language ('uk' | 'en' | 'ru').
    *
-   * Primary: Groq (llama-3.3-70b-versatile)
-   * Fallback: Google Gemini (gemini-2.5-flash)
-   * Emergency Backup: Language-scoped Redis cache (`ai_clues:<animeId>:<lang>`),
-   * then deterministic localized dossier synthesis.
+   * Execution order:
+   *  1. Groq (`llama-3.3-70b-versatile`)
+   *  2. Google Gemini (`gemini-2.5-flash`)
+   *  3. Emergency Redis cache (`ai_clues:<animeId>:<lang>`, storing ONLY valid LLM outputs)
+   *  4. Offline deterministic dossier synthesis (using real plot sentences, characters, year, studio)
    */
   async generateClues(
     anime: Anime,
@@ -86,12 +108,12 @@ export class AiClueService {
     } catch (groqError) {
       const msg =
         groqError instanceof Error ? groqError.message : String(groqError);
-      this.logger.warn(
-        `Groq clue generation failed for animeId=${anime.id} (${normalizedLang}): ${msg}. Falling back to Gemini...`,
+      this.logger.error(
+        `[Groq FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${msg}. Falling back to Gemini...`,
       );
     }
 
-    // 2. Fallback: Gemini (gemini-2.5-flash)
+    // 2. Fallback: Google Gemini (gemini-2.5-flash)
     try {
       const geminiClues = await this.callGemini(systemPrompt, userPrompt);
       const sanitized = this.validateAndSanitizeClueSet(
@@ -106,29 +128,30 @@ export class AiClueService {
         geminiError instanceof Error
           ? geminiError.message
           : String(geminiError);
-      this.logger.warn(
-        `Gemini fallback failed for animeId=${anime.id} (${normalizedLang}): ${msg}. Checking Redis emergency backup...`,
+      this.logger.error(
+        `[Gemini FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${msg}. Checking Redis emergency LLM backup...`,
       );
     }
 
-    // 3. Emergency Backup: Language-scoped Redis cache `ai_clues:<animeId>:<lang>`
+    // 3. Emergency Backup: Language-scoped Redis cache `ai_clues:<animeId>:<lang>` (LLM outputs only)
     const cached = await this.getCachedBackupClues(anime.id, normalizedLang);
     if (cached) {
-      this.logger.log(
-        `Served emergency cached clue set from Redis (${this.buildRedisCacheKey(anime.id, normalizedLang)})`,
+      this.logger.warn(
+        `Served emergency cached LLM clue set from Redis (${this.buildRedisCacheKey(anime.id, normalizedLang)})`,
       );
       return cached;
     }
 
-    // 4. Last-resort deterministic synthesis from dossier so gameplay never fails
-    const synthesized = this.synthesizeFallbackFromDossier(
+    // 4. Offline deterministic dossier fallback (NOT cached to Redis so live LLM takes over immediately once online)
+    this.logger.error(
+      `[AI OFFLINE FALLBACK] Both Groq and Gemini failed with no Redis LLM cache for animeId=${anime.id} (${normalizedLang}). Synthesizing clues from dossier plot/characters.`,
+    );
+    return this.synthesizeFallbackFromDossier(
       anime,
       dossier,
       normalizedLang,
       forbiddenTitles,
     );
-    await this.cacheBackupClues(anime.id, normalizedLang, synthesized);
-    return synthesized;
   }
 
   /**
@@ -138,13 +161,20 @@ export class AiClueService {
     return [...clueSet.hard, ...clueSet.medium, ...clueSet.easy];
   }
 
+  private hasValidApiKey(envKey: string, placeholderPrefix: string): boolean {
+    const val = this.configService.get<string>(envKey)?.trim();
+    return Boolean(val && !val.startsWith(placeholderPrefix));
+  }
+
   private async callGroq(
     systemPrompt: string,
     userPrompt: string,
   ): Promise<unknown> {
     const apiKey = this.configService.get<string>('GROQ_API_KEY')?.trim();
     if (!apiKey || apiKey.startsWith('gsk_your_')) {
-      throw new Error('GROQ_API_KEY is not configured');
+      throw new Error(
+        'GROQ_API_KEY is missing or still set to placeholder in backend/.env',
+      );
     }
 
     const model =
@@ -182,7 +212,7 @@ export class AiClueService {
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
         throw new Error(
-          `Groq HTTP ${response.status}: ${errBody.slice(0, 200)}`,
+          `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
         );
       }
 
@@ -191,7 +221,7 @@ export class AiClueService {
       };
       const rawContent = data.choices?.[0]?.message?.content;
       if (!rawContent) {
-        throw new Error('Groq returned empty message content');
+        throw new Error(`Groq returned empty message content (model=${model})`);
       }
 
       return JSON.parse(rawContent);
@@ -206,7 +236,9 @@ export class AiClueService {
   ): Promise<unknown> {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY')?.trim();
     if (!apiKey || apiKey.startsWith('your_')) {
-      throw new Error('GEMINI_API_KEY is not configured');
+      throw new Error(
+        'GEMINI_API_KEY is missing or still set to placeholder in backend/.env',
+      );
     }
 
     const model =
@@ -250,7 +282,7 @@ export class AiClueService {
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
         throw new Error(
-          `Gemini HTTP ${response.status}: ${errBody.slice(0, 200)}`,
+          `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
         );
       }
 
@@ -261,7 +293,9 @@ export class AiClueService {
       };
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!rawText) {
-        throw new Error('Gemini returned empty candidate content');
+        throw new Error(
+          `Gemini returned empty candidate content (model=${model})`,
+        );
       }
 
       return JSON.parse(rawText);
@@ -276,43 +310,47 @@ export class AiClueService {
     mainCharacterNames: string[],
   ): string {
     const languageSpecs: Record<SupportedLanguage, string> = {
-      uk: 'Ukrainian (Українська мова) — STRICTLY Ukrainian Cyrillic text only. NEVER fallback to English or Russian sentences, and ALWAYS translate any English dossier facts naturally into Ukrainian.',
-      en: 'English — STRICTLY natural English text only.',
-      ru: 'Russian (Русский язык) — STRICTLY Russian Cyrillic text only. NEVER fallback to English sentences, and ALWAYS translate any English dossier facts naturally into Russian.',
+      uk: 'Ukrainian (Українська мова) — STRICTLY natural Ukrainian Cyrillic text. NEVER output raw English sentences, genre lists, or English AniList tag names.',
+      en: 'English — STRICTLY natural English prose. NEVER output raw comma-separated genre/tag lists.',
+      ru: 'Russian (Русский язык) — STRICTLY natural Russian Cyrillic text. NEVER output raw English sentences, genre lists, or English AniList tag names.',
     };
 
     const mainCharsBlock =
       mainCharacterNames.length > 0
-        ? `Identified main characters (protagonists/deuteragonists): ${mainCharacterNames.join(', ')}.`
-        : 'Identify the main protagonist(s) and deuteragonist(s) from the dossier.';
+        ? `Main characters (FORBIDDEN in Clues 1–4; REQUIRED/ALLOWED in Clues 5–6): ${mainCharacterNames.join(', ')}.`
+        : 'Identify the main protagonist(s) and deuteragonist(s) from the dossier. Keep their names strictly out of Clues 1–4 and use them in Clues 5–6.';
 
     return [
       `You are an expert anime trivia game master creating 6 progressive deduction clues for a mystery anime.`,
       ``,
       `MANDATORY TARGET LANGUAGE:`,
-      `ALL 6 clues MUST be written natively and strictly in ${languageSpecs[lang]}`,
-      `Never copy raw English text from the dossier when Ukrainian or Russian is requested.`,
+      `Write ALL 6 clues natively and strictly in ${languageSpecs[lang]}`,
       ``,
       `OUTPUT FORMAT: Return STRICT JSON ONLY matching this exact schema:`,
       `{"hard": ["clue 1", "clue 2"], "medium": ["clue 3", "clue 4"], "easy": ["clue 5", "clue 6"]}`,
       ``,
-      `STRICT DIFFICULTY TIER PROGRESSION & CHARACTER NAME RULES:`,
-      `- HARD (Clues 1 & 2): Obscure Fandom trivia, background memes, specific world rules, or minor side-character quirks.`,
-      `  STRICTLY FORBIDDEN in HARD clues: Do NOT mention any main character (protagonist/deuteragonist) names and do NOT mention the anime title.`,
-      `- MEDIUM (Clues 3 & 4): Core plot premise, central conflict, or ironic summary of how the protagonist solves problems.`,
-      `  STRICTLY FORBIDDEN in MEDIUM clues: Do NOT mention main character names (refer to them only by role, occupation, or traits) and do NOT repeat facts from Hard clues.`,
-      `- EASY (Clues 5 & 6): Iconic plot twists, signature powers/items, famous memes, or major character names/catchphrases that make the show recognizable — without stating the anime title itself and without repeating clues 1–4.`,
+      `STRICTLY FORBIDDEN GENERIC TEMPLATES:`,
+      `- NEVER list raw AniList genre or tag names (e.g. NEVER write "у жанрах: Action, Drama, Mecha", "в жанрах: ...", "genres include ...", or comma-separated English tags).`,
+      `- Every clue must convey concrete story details, trivia, mechanics, scenes, or character identities — NEVER vague filler.`,
+      ``,
+      `EXACT 6-CLUE DIFFICULTY PROGRESSION:`,
+      `- Clues 1 & 2 ("hard"): Obscure Fandom trivia, background details, specific world rules, or minor side-character quirks.`,
+      `  STRICTLY FORBIDDEN in Clues 1–2: NO main character names and NO anime title.`,
+      `- Clues 3 & 4 ("medium"): The core plot premise, central conflict, or unique mechanics of the story (for example: a viral outbreak in Japan and a teenager gaining the power to pull weapons/Voids out of people's chests).`,
+      `  STRICTLY FORBIDDEN in Clues 3–4: NO main character names (refer to them only by role/traits), NO anime title, and NO repeating Clues 1–2.`,
+      `- Clue 5 ("easy"[0]): Iconic turning points, famous memes/scenes, or the names of the main characters (e.g. Shu Ouma, Inori Yuzuriha...) and their roles — without repeating Clues 1–4 or naming the anime.`,
+      `- Clue 6 ("easy"[1] — FINAL GIVEAWAY): A direct, crystal-clear summary combining the release year, animation studio (if known), the protagonist's most famous iconic premise/signature ability, and the main character names so anyone who has watched the show immediately recognizes it — still without writing the exact anime title itself and without repeating earlier clues.`,
       ``,
       mainCharsBlock,
       ``,
       `NO-REPEAT RULE (CRITICAL):`,
-      `All 6 clues must describe 6 completely distinct facts/aspects. Clue 5 and Clue 6 must NEVER paraphrase or repeat Clue 1 or Clue 2. Never reuse the same fact across tiers.`,
+      `All 6 clues MUST describe 6 completely distinct facts/aspects. Clue 5 and Clue 6 must NEVER paraphrase or repeat Clue 1, 2, 3, or 4.`,
       ``,
       `FORBIDDEN ANIME TITLES (NEVER WRITE THESE IN ANY CLUE):`,
       `${forbiddenTitles.join(' / ') || 'N/A'}`,
-      `If a character's name is also the exact anime title, never write that exact title; refer to their surname, nickname, role, or companions instead.`,
+      `If a character's name is identical to the exact anime title, never write that exact title; refer to their surname, nickname, role, or companions instead.`,
       ``,
-      `STYLE: Keep each clue concise (1–2 vivid sentences), accurate, and engaging.`,
+      `STYLE: Keep each clue vivid, concrete, and concise (1–2 sentences).`,
     ].join('\n');
   }
 
@@ -328,35 +366,39 @@ export class AiClueService {
       ru: 'Russian (ru)',
     };
 
+    const cleanedDescription = this.cleanHtml(
+      dossier.anilistDescription ?? dossier.description ?? '',
+      1500,
+    );
+    const cleanedWikiPlot = this.cleanHtml(dossier.wikipediaPlot ?? '', 1400);
+    const seasonYear = dossier.seasonYear ?? anime.year ?? null;
+    const studios = (dossier.studios ?? []).filter(Boolean);
+
     const charactersText = (dossier.characters ?? [])
       .slice(0, 10)
       .map(
         (c) =>
-          `- ${c.name}${c.role ? ` [${c.role}]` : ''}: ${(c.description ?? '').slice(0, 220)}`,
+          `- ${c.name}${c.role ? ` [${c.role}]` : ''}: ${this.cleanHtml(c.description ?? '', 240)}`,
       )
       .join('\n');
 
     const triviaText = (dossier.fandomTrivia ?? [])
       .slice(0, 8)
-      .map((t) => `- ${t}`)
+      .map((t) => `- ${this.cleanHtml(t, 280)}`)
       .join('\n');
 
-    const combinedTags = Array.from(
-      new Set([...(dossier.tags ?? []), ...(anime.tags ?? [])]),
-    ).slice(0, 15);
-
     return [
-      `Generate 6 completely distinct progressive clues strictly in ${languageLabel[lang]} for this anime:`,
+      `Generate 6 completely distinct progressive clues strictly in ${languageLabel[lang]} for this mystery anime:`,
       `Romaji Title (DO NOT MENTION): ${anime.titleRomaji ?? 'N/A'}`,
       `English Title (DO NOT MENTION): ${anime.titleEn ?? 'N/A'}`,
       `Ukrainian Title (DO NOT MENTION): ${anime.titleUk ?? 'N/A'}`,
       `Russian Title (DO NOT MENTION): ${anime.titleRu ?? 'N/A'}`,
-      `Format / Release Year: ${anime.type ?? 'Unknown'} / ${anime.year ?? 'Unknown'}`,
-      `Genres: ${(dossier.genres ?? []).join(', ') || 'Unknown'}`,
-      `Tags: ${combinedTags.join(', ') || 'Unknown'}`,
-      `Main Characters (FORBIDDEN in Hard & Medium clues; allowed ONLY in Easy clues): ${mainCharacterNames.join(', ') || 'See Characters list below'}`,
-      `AniList Synopsis:\n${(dossier.anilistDescription ?? '').slice(0, 1000) || 'N/A'}`,
-      `Wikipedia Plot Summary:\n${(dossier.wikipediaPlot ?? '').slice(0, 1200) || 'N/A'}`,
+      `Release Year (seasonYear): ${seasonYear ?? 'Unknown'}`,
+      `Animation Studios: ${studios.length > 0 ? studios.join(', ') : 'Unknown'}`,
+      `Format: ${anime.type ?? 'TV'}`,
+      `Main Characters (FORBIDDEN in Clues 1–4; use in Clues 5–6): ${mainCharacterNames.join(', ') || 'See Characters list below'}`,
+      `AniList Plot Description:\n${cleanedDescription || 'N/A'}`,
+      `Wikipedia Plot Summary:\n${cleanedWikiPlot || 'N/A'}`,
       `Characters:\n${charactersText || 'N/A'}`,
       `Fandom Wiki Trivia & Memes:\n${triviaText || 'N/A'}`,
     ].join('\n\n');
@@ -422,12 +464,19 @@ export class AiClueService {
     );
     const easy = this.normalizePair(obj.easy, 'easy', forbiddenTitles, lang);
 
+    const allClues = [...hard, ...medium, ...easy];
+
     // Reject duplicate clues across tiers
-    const normalizedSet = new Set(
-      [...hard, ...medium, ...easy].map((c) => c.toLowerCase()),
-    );
+    const normalizedSet = new Set(allClues.map((c) => c.toLowerCase()));
     if (normalizedSet.size < 6) {
       throw new Error('AI response contained duplicate clues across tiers');
+    }
+
+    // Reject banned generic genre-list templates
+    if (allClues.some((c) => BANNED_GENRE_TEMPLATE_RE.test(c))) {
+      throw new Error(
+        'AI response contained forbidden generic genre-list template wording',
+      );
     }
 
     return { hard, medium, easy };
@@ -480,6 +529,49 @@ export class AiClueService {
       scrubbed = scrubbed.replace(regex, '[***]');
     }
     return scrubbed;
+  }
+
+  private scrubMainNames(text: string, mainCharacterNames: string[]): string {
+    let scrubbed = text;
+    for (const fullName of mainCharacterNames) {
+      const tokens = fullName
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3);
+      for (const token of [fullName, ...tokens]) {
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        scrubbed = scrubbed.replace(
+          new RegExp(`\\b${escaped}\\b`, 'gi'),
+          'the protagonist',
+        );
+      }
+    }
+    return scrubbed;
+  }
+
+  private cleanHtml(text: string, maxLen = 1400): string {
+    if (!text) return '';
+    return text
+      .replace(/~![\s\S]*?!~/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&quot;/g, '"')
+      .replace(/&#0?39;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/__(.+?)__/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLen);
+  }
+
+  private splitSentences(text: string): string[] {
+    if (!text) return [];
+    return text
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 25);
   }
 
   private extractDossier(anime: Anime): AnimeDossier {
@@ -538,6 +630,10 @@ export class AiClueService {
         Array.isArray(parsed.easy) &&
         parsed.easy.length === 2
       ) {
+        const all = [...parsed.hard, ...parsed.medium, ...parsed.easy];
+        if (all.some((c) => BANNED_GENRE_TEMPLATE_RE.test(c))) {
+          return null;
+        }
         return parsed;
       }
       return null;
@@ -546,138 +642,214 @@ export class AiClueService {
     }
   }
 
+  /**
+   * Offline fallback when both Groq and Gemini are unavailable and no LLM backup exists in Redis.
+   * Splits real plot sentences from `dossier.description` / `wikipediaPlot`, Fandom trivia,
+   * `seasonYear`, `studios`, and `characters` across 6 distinct steps without ever outputting
+   * generic genre-list templates.
+   */
   private synthesizeFallbackFromDossier(
     anime: Anime,
     dossier: AnimeDossier,
     lang: SupportedLanguage,
     forbiddenTitles: string[],
   ): GeneratedClueSet {
-    const genres = (dossier.genres ?? []).slice(0, 3);
-    const tags = Array.from(
-      new Set([...(dossier.tags ?? []), ...(anime.tags ?? [])]),
-    ).slice(0, 5);
-    const yearText = anime.year ? String(anime.year) : '';
-    const typeText = anime.type ?? 'TV';
+    const mainChars = this.extractMainCharacterNames(dossier).slice(0, 4);
     const supportingChars = (dossier.characters ?? [])
       .filter((c) => (c.role ?? '').toUpperCase() !== 'MAIN')
-      .slice(0, 2)
+      .slice(0, 3)
       .map((c) => c.name);
-    const mainChars = this.extractMainCharacterNames(dossier).slice(0, 3);
+    const mainCharDetails = (dossier.characters ?? [])
+      .filter((c) => (c.role ?? '').toUpperCase() === 'MAIN')
+      .slice(0, 2)
+      .map((c) => {
+        const firstLine = this.splitSentences(
+          this.cleanHtml(c.description ?? '', 260),
+        )[0];
+        return firstLine ? `${c.name} — ${firstLine}` : c.name;
+      });
 
-    const scrub = (s: string) => this.scrubForbiddenTitles(s, forbiddenTitles);
+    const cleanedDesc = this.cleanHtml(
+      dossier.anilistDescription ?? dossier.description ?? '',
+      1500,
+    );
+    const cleanedWiki = this.cleanHtml(dossier.wikipediaPlot ?? '', 1200);
+    const plotSentences = Array.from(
+      new Set([
+        ...this.splitSentences(cleanedDesc),
+        ...this.splitSentences(cleanedWiki),
+      ]),
+    );
+
+    const triviaItems = (dossier.fandomTrivia ?? [])
+      .map((t) => this.cleanHtml(t, 260))
+      .filter((t) => t.length >= 25);
+
+    const seasonYear = dossier.seasonYear ?? anime.year ?? null;
+    const studios = (dossier.studios ?? []).filter(Boolean);
+    const studioText = studios.join(', ');
+    const formatText = anime.type ?? 'TV';
+
+    const scrubAll = (s: string) =>
+      this.scrubForbiddenTitles(s, forbiddenTitles);
+    const scrubNoMain = (s: string) =>
+      this.scrubMainNames(scrubAll(s), mainChars);
+
+    // Distinct facts allocated strictly across steps 1..6 (zero overlap)
+    const plot1 = plotSentences[0] ?? '';
+    const plot2 = plotSentences[1] ?? '';
+    const plot3 = plotSentences[2] ?? '';
+    const plot4 = plotSentences[3] ?? '';
+
+    const rawHard1 = triviaItems[0] || plot3 || '';
+    const rawHard2 = triviaItems[1] || '';
+    const rawMed1 = plot1;
+    const rawMed2 = plot2 || plot4 || '';
+    const rawEasyGiveawayPlot = plot4 || plot3 || plot1 || '';
 
     if (lang === 'uk') {
+      const hard1 = rawHard1
+        ? `Цікавий факт про світ цієї історії: ${scrubNoMain(rawHard1)}`
+        : studioText
+          ? `Над виробництвом цього тайтлу (${formatText}) працювала студія ${studioText}.`
+          : `Це аніме формату ${formatText} вирізняється впізнаваними правилами свого світу та прихованими деталями лору.`;
+
+      const hard2 = rawHard2
+        ? `Фандомна деталь: ${scrubNoMain(rawHard2)}`
+        : supportingChars.length > 0
+          ? `Серед другорядних персонажів історії з'являються: ${supportingChars.join(', ')}.`
+          : seasonYear
+            ? `Прем'єра цього серіалу (${formatText}) відбулася у ${seasonYear} році.`
+            : `У центрі подій стоїть незвичний конфлікт із нестандартними правилами протистояння.`;
+
+      const med1 = rawMed1
+        ? `Сюжетна зав'язка: ${scrubNoMain(rawMed1)}`
+        : `Головний герой опиняється у центрі кризи, яка змушує його по-новому поглянути на власні можливості.`;
+
+      const med2 = rawMed2
+        ? `Розвиток конфлікту: ${scrubNoMain(rawMed2)}`
+        : `Ключова механіка історії поступово змінює баланс сил між ворогуючими сторонами.`;
+
+      const easy1 =
+        mainCharDetails.length > 0
+          ? `Ключові герої цієї історії: ${scrubAll(mainCharDetails.join(' | '))}`
+          : mainChars.length > 0
+            ? `Головними дійовими особами цієї історії є ${mainChars.join(', ')}.`
+            : `Сюжетний поворот із головним героєм став однією з найвідоміших сцен цього аніме.`;
+
+      const giveawayParts: string[] = [];
+      if (seasonYear) giveawayParts.push(`рік виходу — ${seasonYear}`);
+      if (studioText) giveawayParts.push(`студія — ${studioText}`);
+      if (mainChars.length > 0) {
+        giveawayParts.push(`головні персонажі — ${mainChars.join(', ')}`);
+      }
+      const easy2 = scrubAll(
+        giveawayParts.length > 0
+          ? `Фінальна підказка: ${giveawayParts.join('; ')}.${rawEasyGiveawayPlot ? ` Сюжет: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
+          : `Фінальна підказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'культова історія з яскравим головним героєм і впізнаваною розвʼязкою.'}`,
+      );
+
       return {
-        hard: [
-          scrub(
-            yearText
-              ? `Це аніме формату ${typeText} вийшло у ${yearText} році та вирізняється незвичними правилами свого світу.`
-              : `Це аніме формату ${typeText} вирізняється специфічною атмосферою та впізнаваними деталями світобудови.`,
-          ),
-          scrub(
-            supportingChars.length > 0
-              ? `Серед другорядних персонажів цієї історії згадуються ${supportingChars.join(', ')}.`
-              : `Серед тематичних мотивів тайтлу виділяють: ${tags.slice(0, 3).join(', ') || 'пригоди, драма'}.`,
-          ),
-        ],
-        medium: [
-          scrub(
-            `У центрі конфлікту — головний герой, якому доводиться долати несподівані випробування у жанрах: ${genres.join(', ') || 'екшн, драма'}.`,
-          ),
-          scrub(
-            `Сюжетна зав'язка будується навколо поєднання мотивів ${tags.slice(0, 4).join(', ') || 'таємниці та боротьби'} і поступового розкриття правди.`,
-          ),
-        ],
-        easy: [
-          scrub(
-            mainChars.length > 0
-              ? `Серед ключових головних персонажів цієї історії: ${mainChars.join(', ')}.`
-              : `Протагоністи цієї історії стали культовими завдяки своїм унікальним здібностям та сюжетним поворотам.`,
-          ),
-          scrub(
-            yearText
-              ? `Відомий тайтл ${yearText} року у форматі ${typeText}, який поєднує жанри ${genres.join(', ') || 'екшн і драму'}.`
-              : `Відомий тайтл формату ${typeText}, який поєднує жанри ${genres.join(', ') || 'екшн і драму'}.`,
-          ),
-        ],
+        hard: [scrubAll(hard1), scrubAll(hard2)],
+        medium: [scrubAll(med1), scrubAll(med2)],
+        easy: [scrubAll(easy1), scrubAll(easy2)],
       };
     }
 
     if (lang === 'ru') {
+      const hard1 = rawHard1
+        ? `Интересный факт о мире этой истории: ${scrubNoMain(rawHard1)}`
+        : studioText
+          ? `Над созданием этого тайтла (${formatText}) работала студия ${studioText}.`
+          : `Это аниме формата ${formatText} выделяется узнаваемыми правилами мира и скрытыми деталями лора.`;
+
+      const hard2 = rawHard2
+        ? `Деталь из фандома: ${scrubNoMain(rawHard2)}`
+        : supportingChars.length > 0
+          ? `Среди второстепенных персонажей истории фигурируют: ${supportingChars.join(', ')}.`
+          : seasonYear
+            ? `Премьера этого аниме (${formatText}) состоялась в ${seasonYear} году.`
+            : `В центре событий лежит нестандартный конфликт с особыми правилами противостояния.`;
+
+      const med1 = rawMed1
+        ? `Завязка сюжета: ${scrubNoMain(rawMed1)}`
+        : `Главный герой оказывается в центре кризиса, который заставляет его раскрыть необычные способности.`;
+
+      const med2 = rawMed2
+        ? `Развитие конфликта: ${scrubNoMain(rawMed2)}`
+        : `Ключевая механика истории постепенно меняет расстановку сил между сторонами конфликта.`;
+
+      const easy1 =
+        mainCharDetails.length > 0
+          ? `Ключевые герои этой истории: ${scrubAll(mainCharDetails.join(' | '))}`
+          : mainChars.length > 0
+            ? `Главными действующими лицами этой истории являются ${mainChars.join(', ')}.`
+            : `Кульминационный поворот с главным героем стал одной из самых узнаваемых сцен этого аниме.`;
+
+      const giveawayParts: string[] = [];
+      if (seasonYear) giveawayParts.push(`год выхода — ${seasonYear}`);
+      if (studioText) giveawayParts.push(`студия — ${studioText}`);
+      if (mainChars.length > 0) {
+        giveawayParts.push(`главные персонажи — ${mainChars.join(', ')}`);
+      }
+      const easy2 = scrubAll(
+        giveawayParts.length > 0
+          ? `Финальная подсказка: ${giveawayParts.join('; ')}.${rawEasyGiveawayPlot ? ` Сюжет: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
+          : `Финальная подсказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'культовая история с ярким протагонистом и запоминающейся развязкой.'}`,
+      );
+
       return {
-        hard: [
-          scrub(
-            yearText
-              ? `Это аниме формата ${typeText} вышло в ${yearText} году и выделяется особыми правилами своего мира.`
-              : `Это аниме формата ${typeText} выделяется специфической атмосферой и узнаваемыми деталями мироустройства.`,
-          ),
-          scrub(
-            supportingChars.length > 0
-              ? `Среди второстепенных персонажей этой истории встречаются ${supportingChars.join(', ')}.`
-              : `Среди тематических мотивов тайтла выделяются: ${tags.slice(0, 3).join(', ') || 'приключения, драма'}.`,
-          ),
-        ],
-        medium: [
-          scrub(
-            `В центре конфликта — протагонист, которому приходится преодолевать неожиданные испытания в жанрах: ${genres.join(', ') || 'экшен, драма'}.`,
-          ),
-          scrub(
-            `Завязка сюжета строится вокруг сочетания мотивов ${tags.slice(0, 4).join(', ') || 'тайны и противостояния'} и постепенного раскрытия интриги.`,
-          ),
-        ],
-        easy: [
-          scrub(
-            mainChars.length > 0
-              ? `Среди ключевых главных персонажей этой истории: ${mainChars.join(', ')}.`
-              : `Главные герои этой истории стали культовыми благодаря своим уникальным способностям и сюжетным поворотам.`,
-          ),
-          scrub(
-            yearText
-              ? `Известный тайтл ${yearText} года в формате ${typeText}, объединяющий жанры ${genres.join(', ') || 'экшен и драму'}.`
-              : `Известный тайтл формата ${typeText}, объединяющий жанры ${genres.join(', ') || 'экшен и драму'}.`,
-          ),
-        ],
+        hard: [scrubAll(hard1), scrubAll(hard2)],
+        medium: [scrubAll(med1), scrubAll(med2)],
+        easy: [scrubAll(easy1), scrubAll(easy2)],
       };
     }
 
-    const trivia1 =
-      dossier.fandomTrivia?.[0] ??
-      (yearText
-        ? `Released in ${yearText} (${typeText}), this series is known for distinct worldbuilding quirks.`
-        : `This ${typeText} series is known for distinct worldbuilding rules and community trivia.`);
-    const plotSnippet = (
-      dossier.anilistDescription ??
-      dossier.wikipediaPlot ??
-      'The protagonist faces an escalating conflict driven by unusual rules and alliances.'
-    ).slice(0, 220);
+    const hard1 = rawHard1
+      ? `World & trivia detail: ${scrubNoMain(rawHard1)}`
+      : studioText
+        ? `This ${formatText} title was animated by ${studioText}.`
+        : `This ${formatText} series features distinctive world rules and background lore details.`;
+
+    const hard2 = rawHard2
+      ? `Community trivia: ${scrubNoMain(rawHard2)}`
+      : supportingChars.length > 0
+        ? `Supporting characters in this world include ${supportingChars.join(', ')}.`
+        : seasonYear
+          ? `This ${formatText} anime originally premiered in ${seasonYear}.`
+          : `Its story revolves around an unusual conflict with high-stakes rules.`;
+
+    const med1 = rawMed1
+      ? `Story premise: ${scrubNoMain(rawMed1)}`
+      : `The protagonist is pulled into a sudden crisis that forces them to rely on an extraordinary power.`;
+
+    const med2 = rawMed2
+      ? `Central conflict: ${scrubNoMain(rawMed2)}`
+      : `A signature mechanic drives the escalating struggle between rival factions.`;
+
+    const easy1 =
+      mainCharDetails.length > 0
+        ? `Lead characters: ${scrubAll(mainCharDetails.join(' | '))}`
+        : mainChars.length > 0
+          ? `The main characters leading this story are ${mainChars.join(', ')}.`
+          : `Its signature plot twist and iconic protagonist moments are immediately recognizable to fans.`;
+
+    const enGiveawayParts: string[] = [];
+    if (seasonYear) enGiveawayParts.push(`released in ${seasonYear}`);
+    if (studioText) enGiveawayParts.push(`animated by ${studioText}`);
+    if (mainChars.length > 0) {
+      enGiveawayParts.push(`starring ${mainChars.join(', ')}`);
+    }
+    const easy2 = scrubAll(
+      enGiveawayParts.length > 0
+        ? `Final giveaway: ${enGiveawayParts.join(', ')}.${rawEasyGiveawayPlot ? ` Premise: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
+        : `Final giveaway (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'An iconic series defined by its unforgettable lead and premise.'}`,
+    );
 
     return {
-      hard: [
-        scrub(trivia1),
-        scrub(
-          supportingChars.length > 0
-            ? `Supporting figures appearing in this world include ${supportingChars.join(', ')}.`
-            : `Notable thematic tags include: ${tags.slice(0, 4).join(', ') || 'Mystery, Supernatural'}.`,
-        ),
-      ],
-      medium: [
-        scrub(
-          `Core genre blend: ${genres.join(', ') || 'Action, Drama'}, centered on how the lead navigates an unusual conflict.`,
-        ),
-        scrub(`Premise overview: ${plotSnippet}`),
-      ],
-      easy: [
-        scrub(
-          mainChars.length > 0
-            ? `Major characters who define this story include ${mainChars.join(', ')}.`
-            : `Iconic abilities, plot twists, and signature confrontations make this series immediately recognizable.`,
-        ),
-        scrub(
-          yearText
-            ? `A memorable ${yearText} ${typeText} release combining ${genres.join(', ') || 'Action and Drama'} with ${tags.slice(0, 3).join(', ') || 'standout twists'}.`
-            : `A memorable ${typeText} release combining ${genres.join(', ') || 'Action and Drama'} with ${tags.slice(0, 3).join(', ') || 'standout twists'}.`,
-        ),
-      ],
+      hard: [scrubAll(hard1), scrubAll(hard2)],
+      medium: [scrubAll(med1), scrubAll(med2)],
+      easy: [scrubAll(easy1), scrubAll(easy2)],
     };
   }
 }

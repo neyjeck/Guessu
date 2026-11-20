@@ -9,6 +9,8 @@ interface AniListEnrichmentResult {
   titleJa: string | null;
   coverUrl: string | null;
   popularity: number | null;
+  seasonYear: number | null;
+  studios: string[];
   genres: string[];
   tags: string[];
   anilistDescription: string;
@@ -31,6 +33,7 @@ query ($id: Int, $search: String) {
   Media(id: $id, search: $search, type: ANIME, isAdult: false) {
     id
     popularity
+    seasonYear
     title {
       romaji
       english
@@ -39,6 +42,11 @@ query ($id: Int, $search: String) {
     coverImage {
       large
       extraLarge
+    }
+    studios(isMain: true) {
+      nodes {
+        name
+      }
     }
     genres
     tags {
@@ -141,12 +149,26 @@ export class AnimeEnrichmentService {
 
     const mergedDossier: AnimeDossier = {
       popularity: anilist?.popularity ?? existingDossier.popularity ?? 0,
+      seasonYear:
+        anilist?.seasonYear ?? existingDossier.seasonYear ?? anime.year ?? null,
+      studios:
+        (anilist?.studios?.length
+          ? anilist.studios
+          : existingDossier.studios) ?? [],
       genres:
         (anilist?.genres?.length ? anilist.genres : existingDossier.genres) ??
         [],
       tags: mergedTags,
+      description:
+        anilist?.anilistDescription ||
+        existingDossier.anilistDescription ||
+        existingDossier.description ||
+        '',
       anilistDescription:
-        anilist?.anilistDescription || existingDossier.anilistDescription || '',
+        anilist?.anilistDescription ||
+        existingDossier.anilistDescription ||
+        existingDossier.description ||
+        '',
       wikipediaPlot: wiki?.wikipediaPlot || existingDossier.wikipediaPlot || '',
       characters:
         (anilist?.characters?.length
@@ -168,6 +190,7 @@ export class AnimeEnrichmentService {
         titleUk: anime.titleUk || wiki?.titleUk || null,
         titleRu: anime.titleRu || wiki?.titleRu || null,
         coverUrl: anime.coverUrl || anilist?.coverUrl || null,
+        year: anime.year ?? anilist?.seasonYear ?? null,
         popularity:
           typeof anilist?.popularity === 'number' && anilist.popularity > 0
             ? anilist.popularity
@@ -219,8 +242,10 @@ export class AnimeEnrichmentService {
       data?: {
         Media?: {
           popularity?: number;
+          seasonYear?: number;
           title?: { romaji?: string; english?: string; native?: string };
           coverImage?: { large?: string; extraLarge?: string };
+          studios?: { nodes?: Array<{ name?: string }> };
           genres?: string[];
           tags?: Array<{ name?: string; rank?: number; isMediaSpoiler?: boolean }>;
           description?: string;
@@ -241,6 +266,14 @@ export class AnimeEnrichmentService {
     if (!media) {
       return null;
     }
+
+    const studios = Array.from(
+      new Set(
+        (media.studios?.nodes ?? [])
+          .map((s) => s.name?.trim())
+          .filter((name): name is string => Boolean(name)),
+      ),
+    );
 
     const tags = (media.tags ?? [])
       .filter(
@@ -270,9 +303,11 @@ export class AnimeEnrichmentService {
       coverUrl:
         media.coverImage?.large || media.coverImage?.extraLarge || null,
       popularity: media.popularity ?? null,
+      seasonYear: media.seasonYear ?? null,
+      studios,
       genres: (media.genres ?? []).filter(Boolean),
       tags,
-      anilistDescription: this.cleanMarkup(media.description, 1100),
+      anilistDescription: this.cleanMarkup(media.description, 1500),
       characters,
     };
   }
