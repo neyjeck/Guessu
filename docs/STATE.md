@@ -12,7 +12,7 @@ tags:
 > **Note:** Keep this file strictly under 100 lines. Read at the start of every session and update upon task completion.
 
 ## Current Context
-- **Active Branch:** `dev` (merged `feat/auth`, `feat/auth-tests`, `feat/google-oauth`, `feat/otp-password-reset`, `feat/anime-data-and-ai`, `feat/solo-game-mvp`, `feat/full-catalog-and-gameplay-fixes`, `feat/popularity-progression`, `fix/ai-clue-quality`, `fix/ai-env-and-translation`, `fix/popular-anime-pool`, `fix/db-gaps-and-clean-clues`, `feat/franchise-root-only`, `fix/ai-token-budget-and-models`)
+- **Active Branch:** `dev` (merged `feat/auth`, `feat/auth-tests`, `feat/google-oauth`, `feat/otp-password-reset`, `feat/anime-data-and-ai`, `feat/solo-game-mvp`, `feat/full-catalog-and-gameplay-fixes`, `feat/popularity-progression`, `fix/ai-clue-quality`, `fix/ai-env-and-translation`, `fix/popular-anime-pool`, `fix/db-gaps-and-clean-clues`, `feat/franchise-root-only`, `fix/ai-token-budget-and-models`, `fix/ai-json-resilience`)
 - **Latest Release Branch:** `main` (initial scaffolding synced)
 - **CI Pipeline:** `.github/workflows/ci.yml` configured for `main`, `dev`, and `feat/**`
 - **Database Status:** Prisma migrations through `add_anime_sequel_flag` applied (`Anime.isSequel` indexed, `Anime.rootAnilistId`, `Anime.popularity` indexed, `pg_trgm` & all 6 GIN indexes active). Run `npm run catalog:sync-popularity` in `backend/` to sync top 2,000 metadata, popularity, and AniList prequel-chain root IDs.
@@ -24,7 +24,7 @@ tags:
 - [x] Core Solo Game Loop & Minimalist Frontend Test Bench (`feat/solo-game-mvp`).
 - [x] Full Catalog Importer, Lazy Enrichment, Search Fixes & Strict AI Clue Rules (`feat/full-catalog-and-gameplay-fixes`).
 - [x] Popularity-Based Streak Difficulty Progression & Top-2,000 Metadata Backfill (`feat/popularity-progression`, `fix/popular-anime-pool`, `fix/db-gaps-and-clean-clues`).
-- [x] AI Clue Quality, Sanitization, Translation & Token Optimization (`fix/ai-clue-quality`, `fix/ai-env-and-translation`, `fix/db-gaps-and-clean-clues`, `fix/ai-token-budget-and-models`): compact prompts + `max_completion_tokens=900` + `reasoning_effort=low` (~70% fewer TPM), Groq `404`/`429` multi-model failover, and `gemini-3.8-flash` fallback.
+- [x] AI Clue Quality, Sanitization, Translation & Token Optimization (`fix/ai-clue-quality`, `fix/ai-env-and-translation`, `fix/db-gaps-and-clean-clues`, `fix/ai-token-budget-and-models`, `fix/ai-json-resilience`): compact prompts, `max_completion_tokens=1400`, resilient JSON tier parsing, Groq multi-model failover on `404`/`429`/`503`/malformed JSON, and Gemini `gemini-3.8-flash` with `503` retry.
 - [x] Franchise Root-Only Selection & Forgiving Sequel Guessing (`feat/franchise-root-only`):
   - Added `isSequel` (`@@index([isSequel])`) and `rootAnilistId` to `Anime` (`add_anime_sequel_flag` migration).
   - Updated `scripts/sync_popularity.py` to fetch AniList `relations` (`PREQUEL` chains walked up to Season 1 `rootAnilistId`) + sequel title regexes across the full catalog.
