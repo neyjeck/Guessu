@@ -151,10 +151,28 @@ export class AnimeService {
   }
 
   /**
-   * Selects a random anime across the full catalog requiring non-null `coverUrl`
-   * and `anilistId`, excluding recently played IDs passed in `excludeIds`.
+   * Maps a player's current streak to the maximum top-popularity catalog pool size:
+   *  - streak < 4:  top 150 most popular anime
+   *  - streak < 10: top 600 most popular anime
+   *  - streak < 20: top 2000 most popular anime
+   *  - streak >= 20: entire eligible catalog (null = uncapped)
    */
-  async getRandomAnime(excludeIds: Array<string | number> = []): Promise<Anime> {
+  getPopularityPoolLimit(currentStreak: number): number | null {
+    if (currentStreak < 4) return 150;
+    if (currentStreak < 10) return 600;
+    if (currentStreak < 20) return 2000;
+    return null;
+  }
+
+  /**
+   * Selects a random eligible anime (non-null `coverUrl` and `anilistId`) ordered by
+   * `popularity DESC` within a streak-scaled difficulty pool while excluding `excludeIds`
+   * (the player's recently played anime IDs).
+   */
+  async getRandomAnime(
+    excludeIds: Array<string | number> = [],
+    currentStreak = 0,
+  ): Promise<Anime> {
     const parsedExcludeIds = excludeIds
       .map((rawId) =>
         typeof rawId === 'number' ? rawId : Number.parseInt(String(rawId), 10),
@@ -192,9 +210,14 @@ export class AnimeService {
       );
     }
 
-    const randomOffset = Math.floor(Math.random() * eligibleCount);
+    const poolLimit = this.getPopularityPoolLimit(currentStreak);
+    const effectivePoolSize =
+      poolLimit !== null ? Math.min(eligibleCount, poolLimit) : eligibleCount;
+
+    const randomOffset = Math.floor(Math.random() * effectivePoolSize);
     const [randomAnime] = await this.prisma.anime.findMany({
       where: activeWhere,
+      orderBy: [{ popularity: 'desc' }, { id: 'asc' }],
       skip: randomOffset,
       take: 1,
     });

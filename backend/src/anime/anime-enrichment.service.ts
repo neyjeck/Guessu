@@ -168,6 +168,10 @@ export class AnimeEnrichmentService {
         titleUk: anime.titleUk || wiki?.titleUk || null,
         titleRu: anime.titleRu || wiki?.titleRu || null,
         coverUrl: anime.coverUrl || anilist?.coverUrl || null,
+        popularity:
+          typeof anilist?.popularity === 'number' && anilist.popularity > 0
+            ? anilist.popularity
+            : anime.popularity,
         isEnriched: true,
       },
     });
