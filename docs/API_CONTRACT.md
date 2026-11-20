@@ -40,17 +40,40 @@ Authentication in **Anime Guesser** uses a dual-token **JWT + Redis Session** st
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "username": "otaku_detective",
+  "nickname": "otaku_detective",
   "email": "challenger@example.com",
   "isEmailVerified": false,
   "role": "USER",
-  "avatarUrl": null,
+  "avatarUrl": "/uploads/avatars/550e8400-1732128000000-a1b2c3d4.webp",
+  "bio": "Mecha & psychological thriller enthusiast.",
+  "favoriteAnime": [
+    {
+      "id": "1",
+      "title": "Steins;Gate",
+      "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx9253-7pdcVzQ7.jpg"
+    }
+  ],
+  "favoriteCharacters": [
+    {
+      "id": 417,
+      "name": "Lelouch Lamperouge",
+      "imageUrl": "https://s4.anilist.co/file/anilistcdn/character/large/b417-4x.png",
+      "animeTitle": "Code Geass: Lelouch of the Rebellion"
+    }
+  ],
+  "theme": "midnight",
   "profileTheme": "default",
   "badgeTitle": "Rookie Guesser",
-  "rating": 1000,
-  "currentStreak": 0,
-  "maxStreak": 0,
+  "isPublicProfile": true,
+  "showStats": true,
+  "showFavorites": true,
+  "gamesPlayed": 12,
+  "gamesWon": 9,
+  "rating": 1180,
+  "currentStreak": 4,
+  "maxStreak": 7,
   "createdAt": "2026-11-17T09:00:00.000Z",
-  "updatedAt": "2026-11-17T09:00:00.000Z"
+  "updatedAt": "2026-11-20T20:30:00.000Z"
 }
 ```
 
@@ -418,4 +441,51 @@ Submits an anime guess (`{ "animeId": "1" }`) or skips to the next clue (`{ "ski
 
 ### `POST /api/game/give-up`
 
-Immediately marks the active round as `'LOST'`, resets the user's `currentStreak` to `0` in PostgreSQL, and returns `{ status: 'LOST', userStats, answer, allClues }`.
+Immediately marks the active round as `'LOST'`, increments `gamesPlayed` (`+1`) and resets the user's `currentStreak` to `0` in PostgreSQL, and returns `{ status: 'LOST', userStats, answer, allClues }`.
+
+---
+
+## 8. User Profile, Avatar Upload, Character Search & Settings (`UsersModule` / `AnimeModule`)
+
+### `GET /api/users/me`
+
+Returns the authenticated user's full profile, game statistics (`rating`, `currentStreak`, `maxStreak`, `gamesPlayed`, `gamesWon`), `favoriteAnime` (up to 5 slots), `favoriteCharacters` (up to 5 slots), `theme`, and privacy controls (`isPublicProfile`, `showStats`, `showFavorites`). Protected by `JwtAuthGuard`.
+
+### `PATCH /api/users/me`
+
+Validates and updates the authenticated user's profile, showcase slots, appearance theme, and privacy preferences. Protected by `JwtAuthGuard`.
+
+- **Request Body (`UpdateProfileDto` — all fields optional):**
+  - `nickname` (or `username`): string (`3–24` characters, trimmed, checked for case-insensitive uniqueness across `User.username`).
+  - `bio`: string or `null` (max `250` characters).
+  - `avatarUrl`: valid HTTP/HTTPS URL, `/uploads/avatars/...` path, or `null`.
+  - `favoriteAnime`: array of up to `5` objects `{ id: string, title: string, coverUrl: string }`.
+  - `favoriteCharacters`: array of up to `5` objects `{ id: number, name: string, imageUrl: string, animeTitle?: string }`.
+  - `theme`: `'midnight' | 'obsidian' | 'sakura-dusk' | 'warm-parchment'`.
+  - `isPublicProfile`: boolean.
+  - `showStats`: boolean.
+  - `showFavorites`: boolean.
+- **Responses:**
+  - `200 OK`: Returns updated `UserResponseEntity`.
+  - `400 Bad Request`: Validation error.
+  - `409 Conflict`: Nickname is already taken.
+
+### `POST /api/users/me/avatar`
+
+Accepts a direct `multipart/form-data` image upload (`jpg`, `jpeg`, `png`, `webp`, max `3 MB`) via Multer, stores the file in `backend/uploads/avatars/`, serves it statically at `/uploads/avatars/<filename>`, updates `User.avatarUrl`, and returns the updated `UserResponseEntity`. Protected by `JwtAuthGuard`.
+
+### `GET /api/anime/characters/search?q=<query>`
+
+Proxies character search to the public **AniList GraphQL API** (`Page(page: 1, perPage: 12) { characters(search: $q, sort: FAVOURITES_DESC) { id name { full } image { large } media(perPage: 1, sort: POPULARITY_DESC) { nodes { title { romaji english } } } } }`) with two-tier caching (1-hour in-memory + 24-hour Redis `anime:char_search:<q>`).
+
+- **Response (`200 OK` — `CharacterSearchResult[]`):**
+  ```json
+  [
+    {
+      "id": 417,
+      "name": "Lelouch Lamperouge",
+      "imageUrl": "https://s4.anilist.co/file/anilistcdn/character/large/b417-4x.png",
+      "animeTitle": "Code Geass: Lelouch of the Rebellion"
+    }
+  ]
+  ```

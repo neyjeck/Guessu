@@ -3,9 +3,11 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { Anime, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { SearchAnimeDto } from './dto/search-anime.dto';
 
 export interface AnimeSearchResult {
@@ -24,12 +26,195 @@ export interface AnimeSearchResult {
   rootAnilistId?: number | null;
 }
 
+export interface CharacterSearchResult {
+  id: number;
+  name: string;
+  imageUrl: string;
+  animeTitle?: string;
+}
+
+const ANILIST_CHARACTER_SEARCH_QUERY = `
+query ($q: String) {
+  Page(page: 1, perPage: 12) {
+    characters(search: $q, sort: FAVOURITES_DESC) {
+      id
+      name {
+        full
+      }
+      image {
+        large
+      }
+      media(perPage: 1, sort: POPULARITY_DESC) {
+        nodes {
+          title {
+            romaji
+            english
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
 @Injectable()
 export class AnimeService {
   private readonly logger = new Logger(AnimeService.name);
   private static readonly DEFAULT_SEARCH_LIMIT = 15;
+  private static readonly CHAR_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour in-memory
+  private static readonly CHAR_REDIS_TTL_SECONDS = 24 * 60 * 60; // 24 hours Redis
+  private readonly characterSearchCache = new Map<
+    string,
+    { expiresAt: number; data: CharacterSearchResult[] }
+  >();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly redisService?: RedisService,
+  ) {}
+
+  /**
+   * Proxies anime character search to the public AniList GraphQL API with
+   * two-tier caching (in-memory + Redis) so users can search and showcase
+   * any anime character with portrait images and source anime title.
+   */
+  async searchCharacters(rawQuery: string): Promise<CharacterSearchResult[]> {
+    const query = (rawQuery ?? '').trim();
+    if (query.length < 2) {
+      return [];
+    }
+
+    const cacheKey = query.toLowerCase();
+    const now = Date.now();
+    const memCached = this.characterSearchCache.get(cacheKey);
+    if (memCached && memCached.expiresAt > now) {
+      return memCached.data;
+    }
+
+    const redisKey = `anime:char_search:${cacheKey}`;
+    if (this.redisService) {
+      try {
+        const rawCached = await this.redisService.getClient().get(redisKey);
+        if (rawCached) {
+          const parsed = JSON.parse(rawCached) as CharacterSearchResult[];
+          if (Array.isArray(parsed)) {
+            this.setCharacterMemoryCache(cacheKey, parsed);
+            return parsed;
+          }
+        }
+      } catch {
+        // Proceed to AniList live fetch on Redis error
+      }
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'AnimeGuesser/1.0 (https://github.com/anime-guesser)',
+        },
+        body: JSON.stringify({
+          query: ANILIST_CHARACTER_SEARCH_QUERY,
+          variables: { q: query },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`AniList HTTP ${response.status}`);
+      }
+
+      const payload = (await response.json()) as {
+        data?: {
+          Page?: {
+            characters?: Array<{
+              id?: number;
+              name?: { full?: string | null };
+              image?: { large?: string | null };
+              media?: {
+                nodes?: Array<{
+                  title?: {
+                    romaji?: string | null;
+                    english?: string | null;
+                  };
+                }>;
+              };
+            }>;
+          };
+        };
+      };
+
+      const characters = payload.data?.Page?.characters ?? [];
+      const mapped: CharacterSearchResult[] = [];
+
+      for (const char of characters) {
+        const id = Number(char?.id);
+        const name = char?.name?.full?.trim();
+        const imageUrl = char?.image?.large?.trim();
+        if (!Number.isInteger(id) || id <= 0 || !name || !imageUrl) {
+          continue;
+        }
+        const mediaNode = char?.media?.nodes?.[0];
+        const animeTitle =
+          mediaNode?.title?.english?.trim() ||
+          mediaNode?.title?.romaji?.trim() ||
+          undefined;
+
+        mapped.push({
+          id,
+          name,
+          imageUrl,
+          ...(animeTitle ? { animeTitle } : {}),
+        });
+      }
+
+      this.setCharacterMemoryCache(cacheKey, mapped);
+      if (this.redisService && mapped.length > 0) {
+        try {
+          await this.redisService
+            .getClient()
+            .set(
+              redisKey,
+              JSON.stringify(mapped),
+              'EX',
+              AnimeService.CHAR_REDIS_TTL_SECONDS,
+            );
+        } catch {
+          // Ignore Redis cache write error
+        }
+      }
+
+      return mapped;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `AniList character search failed for query="${query}": ${msg}`,
+      );
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private setCharacterMemoryCache(
+    key: string,
+    data: CharacterSearchResult[],
+  ): void {
+    if (this.characterSearchCache.size >= 500) {
+      const oldestKey = this.characterSearchCache.keys().next().value;
+      if (oldestKey) {
+        this.characterSearchCache.delete(oldestKey);
+      }
+    }
+    this.characterSearchCache.set(key, {
+      expiresAt: Date.now() + AnimeService.CHAR_CACHE_TTL_MS,
+      data,
+    });
+  }
 
   /**
    * Convenience wrapper accepting a raw query string (defaults to top 15 results).

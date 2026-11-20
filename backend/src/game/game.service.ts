@@ -36,6 +36,8 @@ export interface UserGameStats {
   currentStreak: number;
   maxStreak: number;
   rating: number;
+  gamesPlayed?: number;
+  gamesWon?: number;
 }
 
 export interface RevealedAnimeAnswer {
@@ -201,6 +203,8 @@ export class GameService {
         currentStreak: user.currentStreak,
         maxStreak: user.maxStreak,
         rating: user.rating,
+        gamesPlayed: user.gamesPlayed,
+        gamesWon: user.gamesWon,
       },
       answer: null,
     };
@@ -343,6 +347,8 @@ export class GameService {
         currentStreak: updatedUser.currentStreak,
         maxStreak: updatedUser.maxStreak,
         rating: updatedUser.rating,
+        gamesPlayed: updatedUser.gamesPlayed,
+        gamesWon: updatedUser.gamesWon,
       },
       answer,
     };
@@ -387,6 +393,8 @@ export class GameService {
         currentStreak: updatedUser.currentStreak,
         maxStreak: updatedUser.maxStreak,
         rating: updatedUser.rating,
+        gamesPlayed: updatedUser.gamesPlayed,
+        gamesWon: updatedUser.gamesWon,
       },
       answer,
     };

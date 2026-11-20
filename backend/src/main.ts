@@ -1,7 +1,10 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory, Reflector } from '@nestjs/core';
 import * as cookieParser from 'cookie-parser';
+import * as express from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
@@ -9,8 +12,19 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
 
-  app.use(helmet());
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
   app.use(cookieParser());
+
+  const uploadsDir = path.resolve(process.cwd(), 'uploads');
+  const avatarsDir = path.join(uploadsDir, 'avatars');
+  if (!fs.existsSync(avatarsDir)) {
+    fs.mkdirSync(avatarsDir, { recursive: true });
+  }
+  app.use('/uploads', express.static(uploadsDir));
 
   app.setGlobalPrefix('api');
   app.enableCors({
