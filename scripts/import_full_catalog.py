@@ -819,6 +819,16 @@ def main() -> None:
 
     bulk_upsert_to_postgres(database_url or "", records)
 
+    # Always finish with a fast (~20s) top-1500 AniList popularity sync so early-round
+    # mainstream pools are immediately populated even if `--skip-anilist` was used.
+    try:
+        from sync_popularity import sync_top_popularity
+
+        print("[Catalog] Running fast top-1500 AniList popularity sync...")
+        sync_top_popularity(database_url or "", session=session)
+    except Exception as exc:
+        print(f"[Catalog] Warning: top-1500 popularity sync failed: {exc}")
+
 
 if __name__ == "__main__":
     main()

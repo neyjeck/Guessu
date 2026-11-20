@@ -152,22 +152,25 @@ export class AnimeService {
 
   /**
    * Maps a player's current streak to the maximum top-popularity catalog pool size:
-   *  - streak < 4:  top 150 most popular anime
-   *  - streak < 10: top 600 most popular anime
-   *  - streak < 20: top 2000 most popular anime
-   *  - streak >= 20: entire eligible catalog (null = uncapped)
+   *  - streak < 4  (Rounds 1–4):   top 100 mainstream TV/MOVIE hits (`popularity > 0`)
+   *  - streak < 10 (Rounds 5–10):  top 400 mainstream TV/MOVIE hits (`popularity > 0`)
+   *  - streak < 20 (Rounds 11–20): top 1,500 ranked titles (`popularity > 0`)
+   *  - streak >= 20:               entire 30,000+ eligible catalog (`null` = uncapped)
    */
   getPopularityPoolLimit(currentStreak: number): number | null {
-    if (currentStreak < 4) return 150;
-    if (currentStreak < 10) return 600;
-    if (currentStreak < 20) return 2000;
+    if (currentStreak < 4) return 100;
+    if (currentStreak < 10) return 400;
+    if (currentStreak < 20) return 1500;
     return null;
   }
 
   /**
    * Selects a random eligible anime (non-null `coverUrl` and `anilistId`) ordered by
-   * `popularity DESC` within a streak-scaled difficulty pool while excluding `excludeIds`
-   * (the player's recently played anime IDs).
+   * `popularity DESC` within a strict streak-scaled mainstream difficulty pool while
+   * excluding `excludeIds` (the last 30 played anime IDs in the player's session).
+   *
+   * If `popularity > 0` rows have not been synced yet, falls back gracefully to
+   * well-known titles that have `titleUk` or `titleRu` localized titles populated.
    */
   async getRandomAnime(
     excludeIds: Array<string | number> = [],
@@ -185,32 +188,70 @@ export class AnimeService {
       anilistId: { not: null },
     };
 
-    const whereClause: Prisma.AnimeWhereInput =
+    const withExclusions = (
+      where: Prisma.AnimeWhereInput,
+    ): Prisma.AnimeWhereInput =>
       parsedExcludeIds.length > 0
-        ? {
-            ...baseEligibleWhere,
-            id: { notIn: parsedExcludeIds },
-          }
-        : baseEligibleWhere;
+        ? { ...where, id: { notIn: parsedExcludeIds } }
+        : where;
 
-    let eligibleCount = await this.prisma.anime.count({ where: whereClause });
-    let activeWhere: Prisma.AnimeWhereInput = whereClause;
+    const poolLimit = this.getPopularityPoolLimit(currentStreak);
+    const requiresPopularity = currentStreak < 20;
+    const requiresMainstreamFormat = currentStreak < 10;
 
-    // Fallback to all eligible catalog records if every eligible entry was excluded
-    if (eligibleCount === 0) {
-      eligibleCount = await this.prisma.anime.count({
-        where: baseEligibleWhere,
-      });
-      activeWhere = baseEligibleWhere;
+    // Build ordered candidate filter stages from strictest to most permissive fallback
+    const candidateStages: Prisma.AnimeWhereInput[] = [];
+
+    if (requiresPopularity && requiresMainstreamFormat) {
+      const mainstreamRanked: Prisma.AnimeWhereInput = {
+        ...baseEligibleWhere,
+        popularity: { gt: 0 },
+        type: { in: ['TV', 'MOVIE'] },
+      };
+      candidateStages.push(withExclusions(mainstreamRanked));
+      candidateStages.push(mainstreamRanked);
     }
 
-    if (eligibleCount === 0) {
+    if (requiresPopularity) {
+      const anyRanked: Prisma.AnimeWhereInput = {
+        ...baseEligibleWhere,
+        popularity: { gt: 0 },
+      };
+      candidateStages.push(withExclusions(anyRanked));
+      candidateStages.push(anyRanked);
+
+      // Graceful fallback when popularity scores haven't been synced yet:
+      // prefer well-known localized titles (titleUk or titleRu populated) over unranked random rows
+      const localizedFallback: Prisma.AnimeWhereInput = {
+        ...baseEligibleWhere,
+        ...(requiresMainstreamFormat ? { type: { in: ['TV', 'MOVIE'] } } : {}),
+        OR: [{ titleUk: { not: null } }, { titleRu: { not: null } }],
+      };
+      candidateStages.push(withExclusions(localizedFallback));
+      candidateStages.push(localizedFallback);
+    }
+
+    candidateStages.push(withExclusions(baseEligibleWhere));
+    candidateStages.push(baseEligibleWhere);
+
+    let activeWhere: Prisma.AnimeWhereInput | null = null;
+    let eligibleCount = 0;
+
+    for (const stageWhere of candidateStages) {
+      const count = await this.prisma.anime.count({ where: stageWhere });
+      if (count > 0) {
+        activeWhere = stageWhere;
+        eligibleCount = count;
+        break;
+      }
+    }
+
+    if (!activeWhere || eligibleCount === 0) {
       throw new BadRequestException(
         'No eligible anime entries available in database. Import the catalog first.',
       );
     }
 
-    const poolLimit = this.getPopularityPoolLimit(currentStreak);
     const effectivePoolSize =
       poolLimit !== null ? Math.min(eligibleCount, poolLimit) : eligibleCount;
 
