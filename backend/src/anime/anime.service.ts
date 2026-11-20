@@ -20,6 +20,8 @@ export interface AnimeSearchResult {
   coverUrl: string | null;
   type?: string | null;
   year?: number | null;
+  isSequel?: boolean;
+  rootAnilistId?: number | null;
 }
 
 @Injectable()
@@ -40,13 +42,13 @@ export class AnimeService {
   }
 
   /**
-   * Performs fast, NULL-safe multilingual autocomplete across the 15,000+ anime catalog.
+   * Performs fast, NULL-safe multilingual autocomplete across the 30,000+ anime catalog.
    * Combines case-insensitive substring matching (`ILIKE '%query%'`) with PostgreSQL
    * `pg_trgm` trigram similarity (`SIMILARITY(...) > 0.15`) across all localized title
-   * columns and `synonyms` (`array_to_string(synonyms, ' ')`), ranking:
-   *   1) Exact prefix matches (`ILIKE 'query%'`) first
-   *   2) Substring matches (`ILIKE '%query%'`, including synonyms) second
-   *   3) Highest trigram similarity third
+   * columns and `synonyms`, ranking:
+   *   1) Exact title matches first, prefix matches second, substring matches third, fuzzy fourth
+   *   2) Base/root franchise entries (`isSequel = FALSE`) above sequels/parts within each tier
+   *   3) Highest trigram similarity and popularity descending
    */
   async searchMultilingual(dto: SearchAnimeDto): Promise<AnimeSearchResult[]> {
     const query = (dto.q ?? '').trim();
@@ -72,7 +74,9 @@ export class AnimeService {
           a."synonyms",
           a."coverUrl",
           a."type",
-          a."year"
+          a."year",
+          a."isSequel",
+          a."rootAnilistId"
         FROM "Anime" a
         WHERE
           COALESCE(a."titleEn", '') ILIKE ${substringPattern}
@@ -89,6 +93,12 @@ export class AnimeService {
           OR SIMILARITY(COALESCE(array_to_string(a."synonyms", ' '), ''), ${query}) > 0.15
         ORDER BY
           CASE
+            WHEN LOWER(COALESCE(a."titleEn", '')) = LOWER(${query})
+              OR LOWER(COALESCE(a."titleRomaji", '')) = LOWER(${query})
+              OR LOWER(COALESCE(a."titleUk", '')) = LOWER(${query})
+              OR LOWER(COALESCE(a."titleRu", '')) = LOWER(${query})
+              OR LOWER(COALESCE(a."titleJa", '')) = LOWER(${query})
+            THEN 3
             WHEN COALESCE(a."titleEn", '') ILIKE ${prefixPattern}
               OR COALESCE(a."titleRomaji", '') ILIKE ${prefixPattern}
               OR COALESCE(a."titleUk", '') ILIKE ${prefixPattern}
@@ -104,6 +114,7 @@ export class AnimeService {
             THEN 1
             ELSE 0
           END DESC,
+          CASE WHEN a."isSequel" = FALSE THEN 1 ELSE 0 END DESC,
           GREATEST(
             SIMILARITY(COALESCE(a."titleEn", ''), ${query}),
             SIMILARITY(COALESCE(a."titleRomaji", ''), ${query}),
@@ -112,6 +123,7 @@ export class AnimeService {
             SIMILARITY(COALESCE(a."titleJa", ''), ${query}),
             SIMILARITY(COALESCE(array_to_string(a."synonyms", ' '), ''), ${query})
           ) DESC,
+          a."popularity" DESC,
           a."id" ASC
         LIMIT ${limit};
       `;
@@ -132,6 +144,7 @@ export class AnimeService {
             { synonyms: { has: query } },
           ],
         },
+        orderBy: [{ isSequel: 'asc' }, { popularity: 'desc' }, { id: 'asc' }],
         select: {
           id: true,
           anilistId: true,
@@ -144,6 +157,8 @@ export class AnimeService {
           coverUrl: true,
           type: true,
           year: true,
+          isSequel: true,
+          rootAnilistId: true,
         },
         take: limit,
       });
@@ -152,10 +167,10 @@ export class AnimeService {
 
   /**
    * Maps a player's current streak to the maximum top-popularity catalog pool size:
-   *  - streak < 4  (Rounds 1–4):   top 100 mainstream TV/MOVIE hits (`popularity > 0`)
-   *  - streak < 10 (Rounds 5–10):  top 400 mainstream TV/MOVIE hits (`popularity > 0`)
-   *  - streak < 20 (Rounds 11–20): top 1,500 ranked titles (`popularity > 0`)
-   *  - streak >= 20:               entire 30,000+ eligible catalog (`null` = uncapped)
+   *  - streak < 4  (Rounds 1–4):   top 100 mainstream root TV/MOVIE hits (`popularity > 0`)
+   *  - streak < 10 (Rounds 5–10):  top 400 mainstream root TV/MOVIE hits (`popularity > 0`)
+   *  - streak < 20 (Rounds 11–20): top 1,500 ranked root titles (`popularity > 0`)
+   *  - streak >= 20:               entire 30,000+ eligible root catalog (`null` = uncapped)
    */
   getPopularityPoolLimit(currentStreak: number): number | null {
     if (currentStreak < 4) return 100;
@@ -165,12 +180,11 @@ export class AnimeService {
   }
 
   /**
-   * Selects a random eligible anime (non-null `coverUrl` and `anilistId`) ordered by
-   * `popularity DESC` within a strict streak-scaled mainstream difficulty pool while
-   * excluding `excludeIds` (the last 30 played anime IDs in the player's session).
+   * Selects a random eligible root/base anime (`isSequel: false`, non-null `coverUrl`
+   * and `anilistId`) ordered by `popularity DESC` within a strict streak-scaled mainstream
+   * difficulty pool while excluding `excludeIds` (the last 30 played anime IDs).
    *
-   * If `popularity > 0` rows have not been synced yet, falls back gracefully to
-   * well-known titles that have `titleUk` or `titleRu` localized titles populated.
+   * Never picks sequels, Season 2+, Part 2+, or Final Season entries.
    */
   async getRandomAnime(
     excludeIds: Array<string | number> = [],
@@ -186,6 +200,7 @@ export class AnimeService {
       coverUrl: { not: null },
       NOT: { coverUrl: '' },
       anilistId: { not: null },
+      isSequel: false,
     };
 
     const withExclusions = (
@@ -200,6 +215,7 @@ export class AnimeService {
     const requiresMainstreamFormat = currentStreak < 10;
 
     // Build ordered candidate filter stages from strictest to most permissive fallback
+    // (all stages strictly enforce `isSequel: false`)
     const candidateStages: Prisma.AnimeWhereInput[] = [];
 
     if (requiresPopularity && requiresMainstreamFormat) {
@@ -221,7 +237,7 @@ export class AnimeService {
       candidateStages.push(anyRanked);
 
       // Graceful fallback when popularity scores haven't been synced yet:
-      // prefer well-known localized titles (titleUk or titleRu populated) over unranked random rows
+      // prefer well-known localized root titles (titleUk or titleRu populated)
       const localizedFallback: Prisma.AnimeWhereInput = {
         ...baseEligibleWhere,
         ...(requiresMainstreamFormat ? { type: { in: ['TV', 'MOVIE'] } } : {}),
@@ -248,7 +264,7 @@ export class AnimeService {
 
     if (!activeWhere || eligibleCount === 0) {
       throw new BadRequestException(
-        'No eligible anime entries available in database. Import the catalog first.',
+        'No eligible root anime entries available in database. Import the catalog first.',
       );
     }
 
@@ -281,6 +297,8 @@ export class AnimeService {
         coverUrl: true,
         type: true,
         year: true,
+        isSequel: true,
+        rootAnilistId: true,
       },
     });
     if (!anime) {

@@ -290,9 +290,9 @@ Performs NULL-safe case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_t
   - `q`: Search query string (trimmed, **minimum 2 characters**).
   - `limit`: Optional maximum results (default `15`, range `1–25`).
 - **Ranking Priority:**
-  1. Exact prefix matches (`ILIKE 'q%'`) on any localized title first.
-  2. Substring matches (`ILIKE '%q%'`) on any localized title or `synonyms` second.
-  3. Highest trigram `SIMILARITY()` across localized titles and `synonyms` third.
+  1. Exact title matches first, prefix matches (`ILIKE 'q%'`) second, substring matches (`ILIKE '%q%'`) third, fuzzy trigram matches fourth.
+  2. Base/root franchise entries (`isSequel = false`) prioritized above sequels/parts within each match tier.
+  3. Highest trigram `SIMILARITY()` and `popularity DESC` third.
 - **Response (`200 OK` — `AnimeSearchResult[]`):**
   ```json
   [
@@ -407,7 +407,7 @@ Submits an anime guess (`{ "animeId": "1" }`) or skips to the next clue (`{ "ski
   }
   ```
 - **Scoring & Streak Rules:**
-  - **Correct Guess (`animeId === targetAnimeId`):**
+  - **Correct Guess (`guessedAnime.id === targetAnime.id` OR `guessedAnime.rootAnilistId === targetAnime.anilistId` — forgiving franchise matching):**
     - Marks round `'WON'`.
     - Points by `unlockedStep`: steps `1–2` = `+30`, steps `3–4` = `+20`, steps `5–6` = `+10`.
     - Increments `currentStreak` (`+1`), updates `maxStreak` if beaten, adds `earnedPoints` to `rating` in PostgreSQL, and reveals `answer` and `allClues`.

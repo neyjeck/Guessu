@@ -246,16 +246,21 @@ export class GameService {
       );
     }
 
-    const isCorrect = !isSkip && guessedId === state.targetAnimeId;
+    let isCorrect = !isSkip && guessedId === state.targetAnimeId;
 
     if (!isSkip && guessedId) {
-      const guessedTitle = await this.resolveAnimeDisplayTitle(
-        guessedId,
-        state.lang,
-      );
+      const { displayTitle, matchesFranchise } =
+        await this.evaluateGuessedAnime(
+          guessedId,
+          state.targetAnimeId,
+          state.lang,
+        );
+      if (matchesFranchise) {
+        isCorrect = true;
+      }
       state.guesses.push({
         animeId: guessedId,
-        title: guessedTitle,
+        title: displayTitle,
         isCorrect,
       });
     }
@@ -505,6 +510,72 @@ export class GameService {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.debug(`Background round pre-warm skipped: ${msg}`);
+    }
+  }
+
+  /**
+   * Resolves the guessed anime's localized display title and performs forgiving
+   * franchise-level matching: counts as correct if `guessedAnime.id === targetAnime.id`
+   * OR if `guessedAnime.rootAnilistId === targetAnime.anilistId` (or both belong to the
+   * same franchise root).
+   */
+  private async evaluateGuessedAnime(
+    guessedAnimeId: string,
+    targetAnimeId: string,
+    lang: SupportedLanguage,
+  ): Promise<{ displayTitle: string; matchesFranchise: boolean }> {
+    const guessedNumericId = Number.parseInt(guessedAnimeId, 10);
+    const targetNumericId = Number.parseInt(targetAnimeId, 10);
+
+    if (!Number.isInteger(guessedNumericId) || guessedNumericId <= 0) {
+      return { displayTitle: 'Unknown Anime', matchesFranchise: false };
+    }
+
+    if (guessedAnimeId === targetAnimeId) {
+      const displayTitle = await this.resolveAnimeDisplayTitle(
+        guessedAnimeId,
+        lang,
+      );
+      return { displayTitle, matchesFranchise: true };
+    }
+
+    try {
+      const [guessedAnime, targetAnime] = await Promise.all([
+        this.animeService.findPublicById(guessedNumericId),
+        Number.isInteger(targetNumericId) && targetNumericId > 0
+          ? this.animeService.findPublicById(targetNumericId)
+          : Promise.resolve(null),
+      ]);
+
+      const displayTitle =
+        (lang === 'uk' && guessedAnime.titleUk) ||
+        (lang === 'ru' && guessedAnime.titleRu) ||
+        guessedAnime.titleEn ||
+        guessedAnime.titleRomaji ||
+        `Anime #${guessedAnimeId}`;
+
+      if (!targetAnime) {
+        return { displayTitle, matchesFranchise: false };
+      }
+
+      const matchesFranchise =
+        guessedAnime.id === targetAnime.id ||
+        (guessedAnime.rootAnilistId != null &&
+          targetAnime.anilistId != null &&
+          guessedAnime.rootAnilistId === targetAnime.anilistId) ||
+        (targetAnime.rootAnilistId != null &&
+          guessedAnime.anilistId != null &&
+          targetAnime.rootAnilistId === guessedAnime.anilistId) ||
+        (guessedAnime.rootAnilistId != null &&
+          targetAnime.rootAnilistId != null &&
+          guessedAnime.rootAnilistId === targetAnime.rootAnilistId);
+
+      return { displayTitle, matchesFranchise };
+    } catch {
+      return {
+        displayTitle: `Anime #${guessedAnimeId}`,
+        matchesFranchise: false,
+      };
     }
   }
 
