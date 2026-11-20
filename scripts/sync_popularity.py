@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Fast AniList Top-1500 Popularity Sync Script.
+AniList Top-2,000 Metadata & Popularity Backfill Script.
 
-Queries the public AniList GraphQL API (`Page(page: 1..30, perPage: 50)` sorted by
-`POPULARITY_DESC`) with a polite 0.7s delay between pages (~20 seconds total) and
-bulk-updates `popularity` in PostgreSQL `"Anime"` matching by `anilistId` (with a
-case-insensitive `titleRomaji` / `titleEn` fallback for rows where `anilistId` is NULL).
+Queries the public AniList GraphQL API (`Page(page: 1..40, perPage: 50)` sorted by
+`POPULARITY_DESC`, ~28s with polite 0.7s pacing) and bulk-updates PostgreSQL `"Anime"`
+rows to eliminate NULL metadata gaps across the top 2,000 most popular anime:
+  - `popularity`, `titleEn`, `titleJa`, `year` (`seasonYear`), `type` (`format`)
+  - merged `synonyms`
+  - initial `dossier` JSONB (cleaned `description`, `genres`, `studios`, `seasonYear`, `popularity`)
 """
 
 from __future__ import annotations
 
 import argparse
+import html
+import json
 import os
 import pathlib
+import re
 import sys
 import time
 from typing import Any
@@ -25,11 +30,11 @@ import requests
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 ANILIST_GRAPHQL_URL = "https://graphql.anilist.co"
 USER_AGENT = (
-    "AnimeGuesserPopularitySync/1.0 "
+    "AnimeGuesserPopularitySync/2.0 "
     "(https://github.com/anime-guesser; contact@animeguesser.local)"
 )
 
-ANILIST_POPULARITY_PAGE_QUERY = """
+ANILIST_TOP_METADATA_QUERY = """
 query ($page: Int, $perPage: Int) {
   Page(page: $page, perPage: $perPage) {
     pageInfo {
@@ -39,14 +44,34 @@ query ($page: Int, $perPage: Int) {
     media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) {
       id
       popularity
+      seasonYear
+      format
       title {
         english
         romaji
+        native
       }
+      synonyms
+      genres
+      studios(isMain: true) {
+        nodes {
+          name
+        }
+      }
+      description(asHtml: false)
     }
   }
 }
 """
+
+FORMAT_NORMALIZATION = {
+    "TV": "TV",
+    "TV_SHORT": "TV",
+    "MOVIE": "MOVIE",
+    "OVA": "OVA",
+    "ONA": "ONA",
+    "SPECIAL": "SPECIAL",
+}
 
 
 def load_env_files() -> None:
@@ -87,15 +112,52 @@ def sanitize_psycopg2_dsn(database_url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(filtered_params)))
 
 
+def clean_scraped_text(text: str | None, max_len: int = 1500) -> str:
+    """
+    Sanitizes AniList/Wikipedia/Fandom scraped text:
+      - strips HTML tags and decodes HTML entities
+      - strips AniList spoilers (`~!...!~`) and markdown formatting
+      - removes `(Source: ...)` and `[Written by MAL Rewrite]` citations
+      - removes Wikipedia `(Japanese: ..., Hepburn: ...)` opening romanization headers
+    """
+    if not text:
+        return ""
+    cleaned = html.unescape(text)
+    cleaned = re.sub(r"~!.*?!(?:~)", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
+    cleaned = re.sub(r"\(\s*Source\s*:[^)]*\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[\s*Written by[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*Source\s*:\s*[^.\n]+$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\s*\((?:[^()]|\([^()]*\))*(?:Japanese:|Hepburn:|Romaji:)(?:[^()]|\([^()]*\))*\)",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\[\d+\]", "", cleaned)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_len]
+
+
+def normalize_format(raw_format: str | None) -> str | None:
+    """Normalizes AniList format enums to catalog `Anime.type` values."""
+    if not raw_format:
+        return None
+    return FORMAT_NORMALIZATION.get(raw_format.strip().upper())
+
+
 def fetch_top_popular_anime(
     session: requests.Session,
-    pages: int = 30,
+    pages: int = 40,
     per_page: int = 50,
     delay_seconds: float = 0.7,
 ) -> list[dict[str, Any]]:
     """
-    Fetches the top `pages * per_page` (default 1,500) most popular anime from AniList
-    using paginated `POPULARITY_DESC` GraphQL queries with polite rate limiting.
+    Fetches the top `pages * per_page` (default 2,000) most popular anime from AniList
+    with full base metadata (`title`, `seasonYear`, `format`, `synonyms`, `genres`,
+    `studios`, `description`, `popularity`).
     """
     collected: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
@@ -106,7 +168,7 @@ def fetch_top_popular_anime(
     }
 
     print(
-        f"[PopularitySync] Fetching top {pages * per_page} anime from AniList "
+        f"[PopularitySync] Fetching top {pages * per_page} anime metadata from AniList "
         f"({pages} pages x {per_page}, delay={delay_seconds}s)..."
     )
 
@@ -119,7 +181,7 @@ def fetch_top_popular_anime(
                 resp = session.post(
                     ANILIST_GRAPHQL_URL,
                     json={
-                        "query": ANILIST_POPULARITY_PAGE_QUERY,
+                        "query": ANILIST_TOP_METADATA_QUERY,
                         "variables": {"page": page, "perPage": per_page},
                     },
                     headers=headers,
@@ -153,13 +215,57 @@ def fetch_top_popular_anime(
             if aid in seen_ids:
                 continue
             seen_ids.add(aid)
+
             title = item.get("title") or {}
+            studios_nodes = (item.get("studios") or {}).get("nodes") or []
+            studios = list(
+                dict.fromkeys(
+                    s["name"].strip()
+                    for s in studios_nodes
+                    if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"].strip()
+                )
+            )
+            genres = [
+                g.strip()
+                for g in (item.get("genres") or [])
+                if isinstance(g, str) and g.strip()
+            ]
+            synonyms = list(
+                dict.fromkeys(
+                    s.strip()
+                    for s in (item.get("synonyms") or [])
+                    if isinstance(s, str) and s.strip()
+                )
+            )
+            cleaned_desc = clean_scraped_text(item.get("description"), max_len=1500)
+            season_year = item.get("seasonYear")
+            year = (
+                int(season_year)
+                if isinstance(season_year, int) and 1900 <= season_year <= 2100
+                else None
+            )
+            popularity = max(0, int(item.get("popularity") or 0))
+
+            initial_dossier: dict[str, Any] = {
+                "popularity": popularity,
+                "seasonYear": year,
+                "studios": studios,
+                "genres": genres,
+                "description": cleaned_desc,
+                "anilistDescription": cleaned_desc,
+            }
+
             collected.append(
                 {
                     "anilistId": aid,
-                    "popularity": max(0, int(item.get("popularity") or 0)),
+                    "popularity": popularity,
+                    "year": year,
+                    "type": normalize_format(item.get("format")),
                     "titleEn": (title.get("english") or "").strip() or None,
                     "titleRomaji": (title.get("romaji") or "").strip() or None,
+                    "titleJa": (title.get("native") or "").strip() or None,
+                    "synonyms": synonyms,
+                    "initialDossier": json.dumps(initial_dossier, ensure_ascii=False),
                 }
             )
 
@@ -182,9 +288,9 @@ def apply_popularity_updates(
     entries: list[dict[str, Any]],
 ) -> tuple[int, int]:
     """
-    Updates `"Anime"."popularity"` in PostgreSQL via a temporary staging table:
-      1) Primary match by `"anilistId"`.
-      2) Fallback case-insensitive match by `"titleRomaji"` / `"titleEn"` when `"anilistId"` is NULL.
+    Bulk-updates `"Anime"` in PostgreSQL via a temporary staging table so missing fields
+    (`titleEn`, `titleJa`, `year`, `type`, `popularity`, `synonyms`, and base `dossier`)
+    are backfilled across the top 2,000 titles without wiping existing enriched data.
     """
     if not entries:
         print("[PopularitySync] No entries to update.")
@@ -197,8 +303,13 @@ def apply_popularity_updates(
         (
             e["anilistId"],
             e["popularity"],
+            e["year"],
+            e["type"],
             e["titleEn"],
             e["titleRomaji"],
+            e["titleJa"],
+            e["synonyms"],
+            e["initialDossier"],
         )
         for e in entries
     ]
@@ -210,10 +321,15 @@ def apply_popularity_updates(
                 cur.execute(
                     """
                     CREATE TEMP TABLE popularity_sync_stage (
-                        "anilistId"   INTEGER,
-                        "popularity"  INTEGER NOT NULL,
-                        "titleEn"     TEXT,
-                        "titleRomaji" TEXT
+                        "anilistId"      INTEGER,
+                        "popularity"     INTEGER NOT NULL,
+                        "year"           INTEGER,
+                        "type"           TEXT,
+                        "titleEn"        TEXT,
+                        "titleRomaji"    TEXT,
+                        "titleJa"        TEXT,
+                        "synonyms"       TEXT[],
+                        "initialDossier" JSONB
                     ) ON COMMIT DROP;
                     """
                 )
@@ -222,20 +338,38 @@ def apply_popularity_updates(
                     cur,
                     """
                     INSERT INTO popularity_sync_stage (
-                        "anilistId", "popularity", "titleEn", "titleRomaji"
+                        "anilistId", "popularity", "year", "type",
+                        "titleEn", "titleRomaji", "titleJa", "synonyms", "initialDossier"
                     ) VALUES %s
                     """,
                     rows,
                     page_size=500,
                 )
 
-                # 1. Match directly by anilistId
+                # 1. Match directly by anilistId and backfill all missing metadata fields
                 cur.execute(
                     """
                     UPDATE "Anime" AS a
                     SET
                         "popularity" = s."popularity",
-                        "titleEn" = COALESCE(NULLIF(a."titleEn", ''), s."titleEn")
+                        "titleEn" = COALESCE(NULLIF(a."titleEn", ''), s."titleEn"),
+                        "titleRomaji" = COALESCE(NULLIF(a."titleRomaji", ''), s."titleRomaji"),
+                        "titleJa" = COALESCE(NULLIF(a."titleJa", ''), s."titleJa"),
+                        "year" = COALESCE(a."year", s."year"),
+                        "type" = COALESCE(NULLIF(a."type", ''), s."type"),
+                        "synonyms" = CASE
+                            WHEN cardinality(s."synonyms") > 0 THEN ARRAY(
+                                SELECT DISTINCT unnest(
+                                    COALESCE(a."synonyms", ARRAY[]::TEXT[]) || s."synonyms"
+                                )
+                            )
+                            ELSE a."synonyms"
+                        END,
+                        "dossier" = CASE
+                            WHEN a."dossier" IS NULL OR a."dossier"::text IN ('{}', 'null')
+                                THEN s."initialDossier"
+                            ELSE s."initialDossier" || a."dossier"
+                        END
                     FROM popularity_sync_stage AS s
                     WHERE a."anilistId" IS NOT NULL
                       AND a."anilistId" = s."anilistId";
@@ -243,13 +377,29 @@ def apply_popularity_updates(
                 )
                 matched_by_id = cur.rowcount
 
-                # 2. Fallback case-insensitive title match for rows missing anilistId
+                # 2. Fallback case-insensitive title match for rows where anilistId is NULL
                 cur.execute(
                     """
                     UPDATE "Anime" AS a
                     SET
                         "popularity" = GREATEST(a."popularity", s."popularity"),
-                        "titleEn" = COALESCE(NULLIF(a."titleEn", ''), s."titleEn")
+                        "titleEn" = COALESCE(NULLIF(a."titleEn", ''), s."titleEn"),
+                        "titleJa" = COALESCE(NULLIF(a."titleJa", ''), s."titleJa"),
+                        "year" = COALESCE(a."year", s."year"),
+                        "type" = COALESCE(NULLIF(a."type", ''), s."type"),
+                        "synonyms" = CASE
+                            WHEN cardinality(s."synonyms") > 0 THEN ARRAY(
+                                SELECT DISTINCT unnest(
+                                    COALESCE(a."synonyms", ARRAY[]::TEXT[]) || s."synonyms"
+                                )
+                            )
+                            ELSE a."synonyms"
+                        END,
+                        "dossier" = CASE
+                            WHEN a."dossier" IS NULL OR a."dossier"::text IN ('{}', 'null')
+                                THEN s."initialDossier"
+                            ELSE s."initialDossier" || a."dossier"
+                        END
                     FROM popularity_sync_stage AS s
                     WHERE a."anilistId" IS NULL
                       AND (
@@ -278,7 +428,7 @@ def apply_popularity_updates(
 
 def sync_top_popularity(
     database_url: str,
-    pages: int = 30,
+    pages: int = 40,
     per_page: int = 50,
     delay_seconds: float = 0.7,
     session: requests.Session | None = None,
@@ -304,13 +454,13 @@ def sync_top_popularity(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sync top 1,500 AniList popularity scores into PostgreSQL Anime table"
+        description="Backfill top 2,000 AniList popularity scores and missing metadata fields into PostgreSQL"
     )
     parser.add_argument(
         "--pages",
         type=int,
-        default=30,
-        help="Number of AniList pages to fetch (default: 30 -> 1,500 anime)",
+        default=40,
+        help="Number of AniList pages to fetch (default: 40 -> 2,000 anime)",
     )
     parser.add_argument(
         "--per-page",
