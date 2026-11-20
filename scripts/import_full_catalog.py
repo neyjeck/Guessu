@@ -37,6 +37,7 @@ AODB_DOWNLOAD_URL = (
     "https://github.com/manami-project/anime-offline-database/"
     "releases/latest/download/anime-offline-database-minified.json"
 )
+ANILIST_GRAPHQL_URL = "https://graphql.anilist.co"
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
 USER_AGENT = (
     "AnimeGuesserCatalogImporter/1.0 "
@@ -225,6 +226,7 @@ def filter_and_extract_records(raw_data: dict[str, Any]) -> list[dict[str, Any]]
                 "type": anime_type,
                 "year": year,
                 "tags": tags,
+                "popularity": 0,
             }
         )
 
@@ -387,6 +389,155 @@ def enrich_labels_from_wikidata(
     )
 
 
+def build_aliased_anilist_popularity_query(anilist_ids: list[int]) -> str:
+    """Builds an aliased GraphQL query fetching `id` and `popularity` for up to 50 AniList IDs."""
+    aliases = [
+        f"a{idx}: Media(id: {aid}, type: ANIME) {{ id popularity }}"
+        for idx, aid in enumerate(anilist_ids)
+    ]
+    return "query {\n  " + "\n  ".join(aliases) + "\n}"
+
+
+def fetch_anilist_popularity_batch(
+    session: requests.Session,
+    anilist_ids: list[int],
+    max_retries: int = 4,
+) -> tuple[dict[int, int], float]:
+    """
+    Fetches AniList popularity scores for up to 50 AniList IDs in a single aliased
+    GraphQL request, returning `(id -> popularity, recommended_sleep_seconds)`.
+    """
+    query = build_aliased_anilist_popularity_query(anilist_ids)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = session.post(
+                ANILIST_GRAPHQL_URL,
+                json={"query": query},
+                headers=headers,
+                timeout=30,
+            )
+            if resp.status_code == 429 or resp.status_code >= 500:
+                retry_after = int(resp.headers.get("Retry-After", str(10 * attempt)))
+                wait_s = min(max(retry_after, 3), 65)
+                print(
+                    f"[AniList] HTTP {resp.status_code} (attempt {attempt}/{max_retries}). "
+                    f"Sleeping {wait_s}s..."
+                )
+                time.sleep(wait_s)
+                continue
+
+            payload = resp.json() if resp.content else {}
+            data = payload.get("data")
+
+            remaining_hdr = resp.headers.get("X-RateLimit-Remaining")
+            sleep_s = 0.75
+            if remaining_hdr and remaining_hdr.isdigit() and int(remaining_hdr) <= 3:
+                sleep_s = 3.0
+
+            if isinstance(data, dict):
+                scores: dict[int, int] = {}
+                for item in data.values():
+                    if isinstance(item, dict) and item.get("id") is not None:
+                        aid = int(item["id"])
+                        pop = int(item.get("popularity") or 0)
+                        scores[aid] = max(0, pop)
+                return scores, sleep_s
+
+            # Fallback to Page(id_in: [...]) if aliased Media returned no data object
+            fallback_resp = session.post(
+                ANILIST_GRAPHQL_URL,
+                json={
+                    "query": """
+                    query ($ids: [Int], $perPage: Int) {
+                      Page(page: 1, perPage: $perPage) {
+                        media(id_in: $ids, type: ANIME) {
+                          id
+                          popularity
+                        }
+                      }
+                    }
+                    """,
+                    "variables": {"ids": anilist_ids, "perPage": len(anilist_ids)},
+                },
+                headers=headers,
+                timeout=30,
+            )
+            if fallback_resp.ok:
+                media_list = (
+                    fallback_resp.json()
+                    .get("data", {})
+                    .get("Page", {})
+                    .get("media", [])
+                )
+                scores = {
+                    int(m["id"]): max(0, int(m.get("popularity") or 0))
+                    for m in media_list
+                    if isinstance(m, dict) and m.get("id") is not None
+                }
+                return scores, sleep_s
+        except requests.RequestException as exc:
+            if attempt == max_retries:
+                print(f"[AniList] Batch failed after {max_retries} attempts: {exc}")
+                return {}, 1.0
+            time.sleep(2 * attempt)
+
+    return {}, 1.0
+
+
+def enrich_popularity_from_anilist(
+    session: requests.Session,
+    records: list[dict[str, Any]],
+    batch_size: int = 50,
+) -> None:
+    """
+    Bulk-fetches AniList popularity scores using aliased GraphQL queries (50 AniList IDs
+    per request) and attaches `popularity` to each matching catalog record.
+    """
+    by_anilist: dict[int, dict[str, Any]] = {
+        rec["anilistId"]: rec
+        for rec in records
+        if rec["anilistId"] is not None
+    }
+    anilist_ids = list(by_anilist.keys())
+    if not anilist_ids:
+        print("[AniList] No AniList IDs to query for popularity.")
+        return
+
+    batch_size = max(1, min(batch_size, 50))
+    total_batches = (len(anilist_ids) + batch_size - 1) // batch_size
+    print(
+        f"[AniList] Fetching popularity scores for {len(anilist_ids)} anime "
+        f"across {total_batches} aliased GraphQL batches (batch_size={batch_size})..."
+    )
+
+    populated = 0
+    for idx in range(0, len(anilist_ids), batch_size):
+        batch = anilist_ids[idx : idx + batch_size]
+        scores, sleep_s = fetch_anilist_popularity_batch(session, batch)
+        for aid, pop in scores.items():
+            rec = by_anilist.get(aid)
+            if rec is not None:
+                rec["popularity"] = pop
+                if pop > 0:
+                    populated += 1
+
+        batch_num = idx // batch_size + 1
+        if batch_num % 20 == 0 or batch_num == total_batches:
+            print(
+                f"[AniList] Popularity batches completed: {batch_num}/{total_batches} "
+                f"(scored={populated})"
+            )
+        time.sleep(sleep_s)
+
+    print(f"[AniList] Popularity scores populated for {populated}/{len(anilist_ids)} anime.")
+
+
 def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) -> None:
     """
     Bulk-upserts all catalog records into PostgreSQL using a temporary staging table
@@ -414,6 +565,7 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
             r["type"],
             r["year"],
             r["tags"],
+            int(r.get("popularity") or 0),
         )
         for r in records
     ]
@@ -436,7 +588,8 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                         "coverUrl"    TEXT,
                         "type"        TEXT,
                         "year"        INTEGER,
-                        "tags"        TEXT[]
+                        "tags"        TEXT[],
+                        "popularity"  INTEGER
                     ) ON COMMIT DROP;
                     """
                 )
@@ -446,7 +599,8 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                     """
                     INSERT INTO anime_import_stage (
                         "anilistId", "malId", "titleEn", "titleRomaji", "titleJa",
-                        "titleUk", "titleRu", "synonyms", "coverUrl", "type", "year", "tags"
+                        "titleUk", "titleRu", "synonyms", "coverUrl", "type", "year",
+                        "tags", "popularity"
                     ) VALUES %s
                     """,
                     rows,
@@ -482,6 +636,10 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                         "tags" = CASE
                             WHEN cardinality(s."tags") > 0 THEN s."tags"
                             ELSE a."tags"
+                        END,
+                        "popularity" = CASE
+                            WHEN COALESCE(s."popularity", 0) > 0 THEN s."popularity"
+                            ELSE a."popularity"
                         END
                     FROM anime_import_stage AS s
                     WHERE s."anilistId" IS NOT NULL
@@ -519,6 +677,10 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                         "tags" = CASE
                             WHEN cardinality(s."tags") > 0 THEN s."tags"
                             ELSE a."tags"
+                        END,
+                        "popularity" = CASE
+                            WHEN COALESCE(s."popularity", 0) > 0 THEN s."popularity"
+                            ELSE a."popularity"
                         END
                     FROM anime_import_stage AS s
                     WHERE s."malId" IS NOT NULL
@@ -534,7 +696,7 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                     INSERT INTO "Anime" (
                         "anilistId", "malId", "titleEn", "titleRomaji", "titleJa",
                         "titleUk", "titleRu", "synonyms", "coverUrl", "type", "year",
-                        "tags", "screenshots", "dossier", "isEnriched"
+                        "tags", "popularity", "screenshots", "dossier", "isEnriched"
                     )
                     SELECT
                         s."anilistId",
@@ -549,6 +711,7 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
                         s."type",
                         s."year",
                         COALESCE(s."tags", ARRAY[]::TEXT[]),
+                        COALESCE(s."popularity", 0),
                         ARRAY[]::TEXT[],
                         NULL,
                         FALSE
@@ -581,12 +744,23 @@ def bulk_upsert_to_postgres(database_url: str, records: list[dict[str, Any]]) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Import full anime-offline-database catalog + Wikidata uk/ru/en labels into PostgreSQL"
+        description="Import full anime-offline-database catalog + AniList popularity + Wikidata uk/ru/en labels into PostgreSQL"
     )
     parser.add_argument(
         "--use-cached",
         action="store_true",
         help="Read cached local data/anime-offline-database-minified.json instead of re-downloading",
+    )
+    parser.add_argument(
+        "--skip-anilist",
+        action="store_true",
+        help="Skip AniList bulk popularity GraphQL queries",
+    )
+    parser.add_argument(
+        "--anilist-batch-size",
+        type=int,
+        default=50,
+        help="Number of AniList IDs per aliased GraphQL request (default: 50, max: 50)",
     )
     parser.add_argument(
         "--skip-wikidata",
@@ -624,6 +798,13 @@ def main() -> None:
         use_cached=args.use_cached,
     )
     records = filter_and_extract_records(raw_data)
+
+    if not args.skip_anilist:
+        enrich_popularity_from_anilist(
+            session,
+            records,
+            batch_size=max(1, min(args.anilist_batch_size, 50)),
+        )
 
     if not args.skip_wikidata:
         enrich_labels_from_wikidata(

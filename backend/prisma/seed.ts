@@ -39,6 +39,16 @@ async function main(): Promise<void> {
 
   let upserted = 0;
   for (const item of records) {
+    const rawPopularity =
+      item.dossier &&
+      typeof item.dossier === 'object' &&
+      !Array.isArray(item.dossier)
+        ? Number((item.dossier as Record<string, unknown>).popularity ?? 0)
+        : 0;
+    const popularity = Number.isFinite(rawPopularity)
+      ? Math.max(0, Math.trunc(rawPopularity))
+      : 0;
+
     await prisma.anime.upsert({
       where: { anilistId: item.anilistId },
       update: {
@@ -50,6 +60,7 @@ async function main(): Promise<void> {
         titleRu: item.titleRu ?? null,
         synonyms: item.synonyms ?? [],
         coverUrl: item.coverUrl ?? null,
+        popularity,
         screenshots: item.screenshots ?? [],
         dossier: item.dossier,
         isEnriched: true,
@@ -64,6 +75,7 @@ async function main(): Promise<void> {
         titleRu: item.titleRu ?? null,
         synonyms: item.synonyms ?? [],
         coverUrl: item.coverUrl ?? null,
+        popularity,
         screenshots: item.screenshots ?? [],
         dossier: item.dossier,
         isEnriched: true,

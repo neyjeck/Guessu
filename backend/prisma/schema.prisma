@@ -57,10 +57,13 @@ model Anime {
   type         String?
   year         Int?
   tags         String[]      @default([])
+  popularity   Int           @default(0)
   screenshots  String[]      @default([])
   dossier      Json?
   isEnriched   Boolean       @default(false)
   gameSessions GameSession[]
+
+  @@index([popularity])
 }
 
 model GameSession {

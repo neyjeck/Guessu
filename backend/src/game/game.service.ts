@@ -77,6 +77,7 @@ export interface SoloGameResponse {
 interface BufferedRoundPayload {
   targetAnimeId: string;
   lang: SupportedLanguage;
+  poolLimit: number | null;
   clues: GameClueItem[];
 }
 
@@ -123,16 +124,27 @@ export class GameService {
     const user = await this.usersService.findById(userId);
     const existingState = await this.getSoloStateFromRedis(userId);
     const prevRecentIds = existingState?.recentAnimeIds ?? [];
+    const currentPoolLimit = this.animeService.getPopularityPoolLimit(
+      user.currentStreak,
+    );
 
     let targetAnimeId: string;
     let clues: GameClueItem[];
 
-    const buffered = await this.popBufferedRound(userId, lang, prevRecentIds);
+    const buffered = await this.popBufferedRound(
+      userId,
+      lang,
+      prevRecentIds,
+      currentPoolLimit,
+    );
     if (buffered) {
       targetAnimeId = buffered.targetAnimeId;
       clues = buffered.clues;
     } else {
-      const randomAnime = await this.animeService.getRandomAnime(prevRecentIds);
+      const randomAnime = await this.animeService.getRandomAnime(
+        prevRecentIds,
+        user.currentStreak,
+      );
       const enrichedAnime = await this.animeEnrichmentService.ensureEnriched(
         String(randomAnime.id),
       );
@@ -162,8 +174,13 @@ export class GameService {
 
     await this.saveSoloStateToRedis(userId, newState);
 
-    // Pre-warm the next round in the background so subsequent "Next Anime" clicks are near-instant
-    void this.prewarmNextRound(userId, lang, updatedRecentIds);
+    // Pre-warm the next round in the background matching the user's current streak tier
+    void this.prewarmNextRound(
+      userId,
+      lang,
+      updatedRecentIds,
+      user.currentStreak,
+    );
 
     return {
       status: 'IN_PROGRESS',
@@ -415,6 +432,7 @@ export class GameService {
     userId: string,
     lang: SupportedLanguage,
     recentIds: string[],
+    expectedPoolLimit: number | null,
   ): Promise<BufferedRoundPayload | null> {
     try {
       const key = this.buildBufferKey(userId, lang);
@@ -425,6 +443,7 @@ export class GameService {
       if (
         parsed?.targetAnimeId &&
         parsed.lang === lang &&
+        parsed.poolLimit === expectedPoolLimit &&
         Array.isArray(parsed.clues) &&
         parsed.clues.length === 6 &&
         !recentIds.includes(parsed.targetAnimeId)
@@ -441,9 +460,14 @@ export class GameService {
     userId: string,
     lang: SupportedLanguage,
     recentIds: string[],
+    currentStreak: number,
   ): Promise<void> {
     try {
-      const nextAnime: Anime = await this.animeService.getRandomAnime(recentIds);
+      const poolLimit = this.animeService.getPopularityPoolLimit(currentStreak);
+      const nextAnime: Anime = await this.animeService.getRandomAnime(
+        recentIds,
+        currentStreak,
+      );
       const enrichedAnime = await this.animeEnrichmentService.ensureEnriched(
         String(nextAnime.id),
       );
@@ -454,6 +478,7 @@ export class GameService {
       const payload: BufferedRoundPayload = {
         targetAnimeId: String(enrichedAnime.id),
         lang,
+        poolLimit,
         clues: this.formatClueItems(generated),
       };
       await this.redisService

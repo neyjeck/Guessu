@@ -312,9 +312,15 @@ Performs NULL-safe case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_t
   ]
   ```
 
-### `AnimeService.getRandomAnime(excludeIds: string[])`
+### `AnimeService.getRandomAnime(excludeIds: string[], currentStreak: number)`
 
-Selects a random `Anime` record across the full catalog requiring non-null `coverUrl` and `anilistId`, excluding the recently played IDs passed in `excludeIds` (last `30` played IDs tracked per user in Redis `game:solo:<userId>`). Falls back to all eligible catalog records if every eligible ID is in `excludeIds`.
+Selects a random eligible `Anime` record (requiring non-null `coverUrl` and `anilistId`) ordered by `popularity DESC`, scaling the candidate pool by the player's `currentStreak`:
+- `currentStreak < 4`: random from the **top 150** most popular anime.
+- `currentStreak < 10`: random from the **top 600** most popular anime.
+- `currentStreak < 20`: random from the **top 2000** most popular anime.
+- `currentStreak >= 20`: random from the **entire catalog** (15,000+ titles).
+
+Always excludes `excludeIds` (last `30` played anime IDs stored in Redis `game:solo:<userId>`), falling back to all eligible catalog records within the tier if every eligible ID is in `excludeIds`.
 
 ---
 
