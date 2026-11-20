@@ -54,16 +54,19 @@ model Anime {
   titleRu      String?
   synonyms     String[]      @default([])
   coverUrl     String?
-  type         String?
-  year         Int?
-  tags         String[]      @default([])
-  popularity   Int           @default(0)
-  screenshots  String[]      @default([])
-  dossier      Json?
-  isEnriched   Boolean       @default(false)
-  gameSessions GameSession[]
+  type          String?
+  year          Int?
+  tags          String[]      @default([])
+  popularity    Int           @default(0)
+  isSequel      Boolean       @default(false)
+  rootAnilistId Int?
+  screenshots   String[]      @default([])
+  dossier       Json?
+  isEnriched    Boolean       @default(false)
+  gameSessions  GameSession[]
 
   @@index([popularity])
+  @@index([isSequel])
 }
 
 model GameSession {

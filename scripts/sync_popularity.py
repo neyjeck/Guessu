@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-AniList Top-2,000 Metadata & Popularity Backfill Script.
+AniList Top-2,000 Metadata, Popularity & Sequel/Franchise Root Backfill Script.
 
 Queries the public AniList GraphQL API (`Page(page: 1..40, perPage: 50)` sorted by
 `POPULARITY_DESC`, ~28s with polite 0.7s pacing) and bulk-updates PostgreSQL `"Anime"`
-rows to eliminate NULL metadata gaps across the top 2,000 most popular anime:
+rows to eliminate NULL metadata gaps and flag sequels/seasons across the catalog:
   - `popularity`, `titleEn`, `titleJa`, `year` (`seasonYear`), `type` (`format`)
   - merged `synonyms`
+  - `isSequel` & `rootAnilistId` (via AniList `PREQUEL` relation chains walked up to Season 1
+    + title-pattern detection for Season 2+, Part 2+, Cour 2+, Final Season, II/III/IV)
   - initial `dossier` JSONB (cleaned `description`, `genres`, `studios`, `seasonYear`, `popularity`)
 """
 
@@ -30,7 +32,7 @@ import requests
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 ANILIST_GRAPHQL_URL = "https://graphql.anilist.co"
 USER_AGENT = (
-    "AnimeGuesserPopularitySync/2.0 "
+    "AnimeGuesserPopularitySync/3.0 "
     "(https://github.com/anime-guesser; contact@animeguesser.local)"
 )
 
@@ -59,6 +61,16 @@ query ($page: Int, $perPage: Int) {
         }
       }
       description(asHtml: false)
+      relations {
+        edges {
+          relationType
+          node {
+            id
+            type
+            format
+          }
+        }
+      }
     }
   }
 }
@@ -72,6 +84,19 @@ FORMAT_NORMALIZATION = {
     "ONA": "ONA",
     "SPECIAL": "SPECIAL",
 }
+
+PREQUEL_ELIGIBLE_FORMATS = {"TV", "TV_SHORT", "MOVIE"}
+
+# Matches obvious sequel/season/part title markers while avoiding "Season 1" / "Part 1" false positives
+SEQUEL_TITLE_PATTERNS = [
+    re.compile(r"\bSeason\s+(?:[2-9]|\d{2,})\b", re.IGNORECASE),
+    re.compile(r"\b(?:2nd|3rd|[4-9]th|\d{2,}th)\s+Season\b", re.IGNORECASE),
+    re.compile(r"\bPart\s+(?:[2-9]|\d{2,})\b", re.IGNORECASE),
+    re.compile(r"\bCour\s+(?:[2-9]|\d{2,})\b", re.IGNORECASE),
+    re.compile(r"\bFinal\s+Season\b", re.IGNORECASE),
+    re.compile(r"\b(?:2nd|3rd|[4-9]th)\s+Stage\b", re.IGNORECASE),
+    re.compile(r"(?:\s|:)(?:II|III|IV)(?:\s*$|\s*[:\-–])"),
+]
 
 
 def load_env_files() -> None:
@@ -148,6 +173,91 @@ def normalize_format(raw_format: str | None) -> str | None:
     return FORMAT_NORMALIZATION.get(raw_format.strip().upper())
 
 
+def matches_sequel_title(title_en: str | None, title_romaji: str | None) -> bool:
+    """Returns True if either title matches obvious sequel/season/part naming patterns."""
+    for candidate in (title_en, title_romaji):
+        if not candidate:
+            continue
+        for pattern in SEQUEL_TITLE_PATTERNS:
+            if pattern.search(candidate):
+                return True
+    return False
+
+
+def extract_direct_prequel_id(relations: dict[str, Any] | None) -> int | None:
+    """
+    Returns the AniList ID of a `PREQUEL` relation pointing to an `ANIME` of format
+    `TV` / `TV_SHORT` / `MOVIE`, preferring `TV` over `MOVIE` when multiple exist.
+    """
+    edges = (relations or {}).get("edges") or []
+    tv_prequel: int | None = None
+    movie_prequel: int | None = None
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        if str(edge.get("relationType") or "").upper() != "PREQUEL":
+            continue
+        node = edge.get("node") or {}
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "").upper() != "ANIME":
+            continue
+        fmt = str(node.get("format") or "").upper()
+        node_id = node.get("id")
+        if fmt not in PREQUEL_ELIGIBLE_FORMATS or not isinstance(node_id, int):
+            continue
+        if fmt in ("TV", "TV_SHORT") and tv_prequel is None:
+            tv_prequel = node_id
+        elif fmt == "MOVIE" and movie_prequel is None:
+            movie_prequel = node_id
+
+    return tv_prequel if tv_prequel is not None else movie_prequel
+
+
+def resolve_franchise_roots(entries: list[dict[str, Any]]) -> None:
+    """
+    Walks each sequel's `PREQUEL` chain upwards to find the original Season 1
+    `rootAnilistId` (with cycle detection) and sets `isSequel` accordingly.
+    """
+    prequel_map: dict[int, int] = {
+        e["anilistId"]: e["directPrequelId"]
+        for e in entries
+        if e.get("directPrequelId") is not None
+    }
+
+    sequel_count = 0
+    for entry in entries:
+        aid = entry["anilistId"]
+        direct_prequel = entry.get("directPrequelId")
+        root_id: int | None = None
+
+        if direct_prequel is not None:
+            cur = direct_prequel
+            visited = {aid}
+            while cur in prequel_map and cur not in visited:
+                visited.add(cur)
+                nxt = prequel_map[cur]
+                if nxt in visited:
+                    break
+                cur = nxt
+            root_id = cur
+
+        is_sequel = (direct_prequel is not None) or matches_sequel_title(
+            entry.get("titleEn"), entry.get("titleRomaji")
+        )
+
+        entry["isSequel"] = is_sequel
+        entry["rootAnilistId"] = root_id if is_sequel else None
+        if is_sequel:
+            sequel_count += 1
+
+    print(
+        f"[PopularitySync] Franchise resolution complete -> "
+        f"{sequel_count} sequels flagged, {len(entries) - sequel_count} root entries"
+    )
+
+
 def fetch_top_popular_anime(
     session: requests.Session,
     pages: int = 40,
@@ -157,7 +267,7 @@ def fetch_top_popular_anime(
     """
     Fetches the top `pages * per_page` (default 2,000) most popular anime from AniList
     with full base metadata (`title`, `seasonYear`, `format`, `synonyms`, `genres`,
-    `studios`, `description`, `popularity`).
+    `studios`, `description`, `popularity`, and `relations`).
     """
     collected: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
@@ -168,7 +278,7 @@ def fetch_top_popular_anime(
     }
 
     print(
-        f"[PopularitySync] Fetching top {pages * per_page} anime metadata from AniList "
+        f"[PopularitySync] Fetching top {pages * per_page} anime metadata & relations from AniList "
         f"({pages} pages x {per_page}, delay={delay_seconds}s)..."
     )
 
@@ -245,6 +355,7 @@ def fetch_top_popular_anime(
                 else None
             )
             popularity = max(0, int(item.get("popularity") or 0))
+            direct_prequel_id = extract_direct_prequel_id(item.get("relations"))
 
             initial_dossier: dict[str, Any] = {
                 "popularity": popularity,
@@ -265,6 +376,9 @@ def fetch_top_popular_anime(
                     "titleRomaji": (title.get("romaji") or "").strip() or None,
                     "titleJa": (title.get("native") or "").strip() or None,
                     "synonyms": synonyms,
+                    "directPrequelId": direct_prequel_id,
+                    "isSequel": False,
+                    "rootAnilistId": None,
                     "initialDossier": json.dumps(initial_dossier, ensure_ascii=False),
                 }
             )
@@ -280,6 +394,7 @@ def fetch_top_popular_anime(
         if page < pages:
             time.sleep(delay_seconds)
 
+    resolve_franchise_roots(collected)
     return collected
 
 
@@ -289,8 +404,9 @@ def apply_popularity_updates(
 ) -> tuple[int, int]:
     """
     Bulk-updates `"Anime"` in PostgreSQL via a temporary staging table so missing fields
-    (`titleEn`, `titleJa`, `year`, `type`, `popularity`, `synonyms`, and base `dossier`)
-    are backfilled across the top 2,000 titles without wiping existing enriched data.
+    (`titleEn`, `titleJa`, `year`, `type`, `popularity`, `synonyms`, `isSequel`,
+    `rootAnilistId`, and base `dossier`) are backfilled across the top 2,000 titles
+    without wiping existing enriched data.
     """
     if not entries:
         print("[PopularitySync] No entries to update.")
@@ -309,6 +425,8 @@ def apply_popularity_updates(
             e["titleRomaji"],
             e["titleJa"],
             e["synonyms"],
+            bool(e["isSequel"]),
+            e["rootAnilistId"],
             e["initialDossier"],
         )
         for e in entries
@@ -329,6 +447,8 @@ def apply_popularity_updates(
                         "titleRomaji"    TEXT,
                         "titleJa"        TEXT,
                         "synonyms"       TEXT[],
+                        "isSequel"       BOOLEAN NOT NULL DEFAULT FALSE,
+                        "rootAnilistId"  INTEGER,
                         "initialDossier" JSONB
                     ) ON COMMIT DROP;
                     """
@@ -339,14 +459,15 @@ def apply_popularity_updates(
                     """
                     INSERT INTO popularity_sync_stage (
                         "anilistId", "popularity", "year", "type",
-                        "titleEn", "titleRomaji", "titleJa", "synonyms", "initialDossier"
+                        "titleEn", "titleRomaji", "titleJa", "synonyms",
+                        "isSequel", "rootAnilistId", "initialDossier"
                     ) VALUES %s
                     """,
                     rows,
                     page_size=500,
                 )
 
-                # 1. Match directly by anilistId and backfill all missing metadata fields
+                # 1. Match directly by anilistId and backfill all missing metadata + sequel flags
                 cur.execute(
                     """
                     UPDATE "Anime" AS a
@@ -357,6 +478,8 @@ def apply_popularity_updates(
                         "titleJa" = COALESCE(NULLIF(a."titleJa", ''), s."titleJa"),
                         "year" = COALESCE(a."year", s."year"),
                         "type" = COALESCE(NULLIF(a."type", ''), s."type"),
+                        "isSequel" = s."isSequel",
+                        "rootAnilistId" = s."rootAnilistId",
                         "synonyms" = CASE
                             WHEN cardinality(s."synonyms") > 0 THEN ARRAY(
                                 SELECT DISTINCT unnest(
@@ -387,6 +510,8 @@ def apply_popularity_updates(
                         "titleJa" = COALESCE(NULLIF(a."titleJa", ''), s."titleJa"),
                         "year" = COALESCE(a."year", s."year"),
                         "type" = COALESCE(NULLIF(a."type", ''), s."type"),
+                        "isSequel" = s."isSequel",
+                        "rootAnilistId" = COALESCE(s."rootAnilistId", a."rootAnilistId"),
                         "synonyms" = CASE
                             WHEN cardinality(s."synonyms") > 0 THEN ARRAY(
                                 SELECT DISTINCT unnest(
@@ -412,14 +537,39 @@ def apply_popularity_updates(
                 )
                 matched_by_title = cur.rowcount
 
-                cur.execute('SELECT COUNT(*) FROM "Anime" WHERE "popularity" > 0;')
-                total_with_pop = cur.fetchone()[0]
+                # 3. Flag obvious sequel/season titles across the remainder of the 30k+ catalog
+                cur.execute(
+                    """
+                    UPDATE "Anime"
+                    SET "isSequel" = TRUE
+                    WHERE "isSequel" = FALSE
+                      AND (
+                        COALESCE("titleRomaji", '') ~* '(\\mSeason\\s+([2-9]|[0-9]{2,})\\M|\\m(2nd|3rd|[4-9]th|[0-9]{2,}th)\\s+Season\\M|\\mPart\\s+([2-9]|[0-9]{2,})\\M|\\mCour\\s+([2-9]|[0-9]{2,})\\M|\\mFinal\\s+Season\\M|\\m(2nd|3rd|[4-9]th)\\s+Stage\\M)'
+                        OR COALESCE("titleEn", '') ~* '(\\mSeason\\s+([2-9]|[0-9]{2,})\\M|\\m(2nd|3rd|[4-9]th|[0-9]{2,}th)\\s+Season\\M|\\mPart\\s+([2-9]|[0-9]{2,})\\M|\\mCour\\s+([2-9]|[0-9]{2,})\\M|\\mFinal\\s+Season\\M|\\m(2nd|3rd|[4-9]th)\\s+Stage\\M)'
+                        OR COALESCE("titleRomaji", '') ~ '(\\s|:)(II|III|IV)(\\s*$|\\s*[:\\-])'
+                        OR COALESCE("titleEn", '') ~ '(\\s|:)(II|III|IV)(\\s*$|\\s*[:\\-])'
+                      );
+                    """
+                )
+                regex_flagged = cur.rowcount
+
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE "popularity" > 0),
+                        COUNT(*) FILTER (WHERE "isSequel" = TRUE),
+                        COUNT(*) FILTER (WHERE "popularity" > 0 AND "isSequel" = FALSE)
+                    FROM "Anime";
+                    """
+                )
+                total_with_pop, total_sequels, ranked_roots = cur.fetchone()
 
         elapsed = time.monotonic() - started
         print(
             f"[PopularitySync] PostgreSQL updated in {elapsed:.2f}s -> "
             f"matched_by_anilistId={matched_by_id}, matched_by_title={matched_by_title}, "
-            f"total_ranked_in_db={total_with_pop}"
+            f"catalog_regex_flagged={regex_flagged}, total_ranked={total_with_pop}, "
+            f"ranked_roots={ranked_roots}, total_sequels={total_sequels}"
         )
         return matched_by_id, matched_by_title
     finally:
@@ -454,7 +604,7 @@ def sync_top_popularity(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Backfill top 2,000 AniList popularity scores and missing metadata fields into PostgreSQL"
+        description="Backfill top 2,000 AniList popularity scores, metadata, and sequel/root franchise flags into PostgreSQL"
     )
     parser.add_argument(
         "--pages",
