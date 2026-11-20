@@ -47,11 +47,16 @@ export class AiClueService implements OnModuleInit {
   private readonly logger = new Logger(AiClueService.name);
   private static readonly REDIS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
   private static readonly REQUEST_TIMEOUT_MS = 18_000;
+  private static readonly MAX_COMPLETION_TOKENS = 900;
   private static readonly GROQ_FALLBACK_MODELS = [
-    'llama-3.3-70b-versatile',
     'openai/gpt-oss-120b',
     'qwen/qwen3.8-27b',
     'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
+  ];
+  private static readonly GEMINI_FALLBACK_MODELS = [
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
   ];
 
   constructor(
@@ -64,10 +69,10 @@ export class AiClueService implements OnModuleInit {
     const geminiLoaded = this.hasValidApiKey('GEMINI_API_KEY', 'your_');
     const groqModel =
       this.configService.get<string>('GROQ_MODEL')?.trim() ||
-      'llama-3.3-70b-versatile';
+      'openai/gpt-oss-120b';
     const geminiModel =
       this.configService.get<string>('GEMINI_MODEL')?.trim() ||
-      'gemini-2.5-flash';
+      'gemini-3.8-flash';
 
     this.logger.log(
       `Groq API key loaded: ${groqLoaded} (configured model=${groqModel})`,
@@ -226,7 +231,7 @@ export class AiClueService implements OnModuleInit {
 
     const configuredModel =
       this.configService.get<string>('GROQ_MODEL')?.trim() ||
-      'llama-3.3-70b-versatile';
+      'openai/gpt-oss-120b';
     const candidateModels = Array.from(
       new Set([configuredModel, ...AiClueService.GROQ_FALLBACK_MODELS]),
     );
@@ -241,6 +246,21 @@ export class AiClueService implements OnModuleInit {
       );
 
       try {
+        const bodyPayload: Record<string, unknown> = {
+          model,
+          temperature: 0.85,
+          max_completion_tokens: AiClueService.MAX_COMPLETION_TOKENS,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        };
+
+        if (model.startsWith('openai/gpt-oss')) {
+          bodyPayload.reasoning_effort = 'low';
+        }
+
         const response = await fetch(
           'https://api.groq.com/openai/v1/chat/completions',
           {
@@ -249,15 +269,7 @@ export class AiClueService implements OnModuleInit {
               Authorization: `Bearer ${apiKey}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({
-              model,
-              temperature: 0.9,
-              response_format: { type: 'json_object' },
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-              ],
-            }),
+            body: JSON.stringify(bodyPayload),
             signal: controller.signal,
           },
         );
@@ -268,13 +280,16 @@ export class AiClueService implements OnModuleInit {
             `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
           );
 
+          // Automatically fail over to the next Groq model on 404 (deprecated/not found) OR 429 (separate TPM quota bucket)
           if (
             response.status === 404 ||
+            response.status === 429 ||
             errBody.includes('model_not_found') ||
-            errBody.includes('model_decommissioned')
+            errBody.includes('model_decommissioned') ||
+            errBody.includes('rate_limit_exceeded')
           ) {
             this.logger.warn(
-              `Groq model "${model}" unavailable (HTTP ${response.status}); trying next Groq model...`,
+              `Groq model "${model}" unavailable/rate-limited (HTTP ${response.status}); trying next Groq model...`,
             );
             continue;
           }
@@ -316,67 +331,92 @@ export class AiClueService implements OnModuleInit {
       );
     }
 
-    const model =
+    const configuredModel =
       this.configService.get<string>('GEMINI_MODEL')?.trim() ||
-      'gemini-2.5-flash';
-
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      AiClueService.REQUEST_TIMEOUT_MS,
+      'gemini-3.8-flash';
+    const candidateModels = Array.from(
+      new Set([configuredModel, ...AiClueService.GEMINI_FALLBACK_MODELS]),
     );
 
-    try {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-        model,
-      )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    let lastError = new Error('Gemini call failed');
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }],
+    for (const model of candidateModels) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        AiClueService.REQUEST_TIMEOUT_MS,
+      );
+
+      try {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          model,
+        )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
           },
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: userPrompt }],
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemPrompt }],
             },
-          ],
-          generationConfig: {
-            temperature: 0.9,
-            responseMimeType: 'application/json',
-          },
-        }),
-        signal: controller.signal,
-      });
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: userPrompt }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.85,
+              maxOutputTokens: AiClueService.MAX_COMPLETION_TOKENS,
+              responseMimeType: 'application/json',
+            },
+          }),
+          signal: controller.signal,
+        });
 
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => '');
-        throw new Error(
-          `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
-        );
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          lastError = new Error(
+            `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
+          );
+
+          if (response.status === 404 || response.status === 429) {
+            this.logger.warn(
+              `Gemini model "${model}" unavailable/rate-limited (HTTP ${response.status}); trying next Gemini model...`,
+            );
+            continue;
+          }
+
+          throw lastError;
+        }
+
+        const data = (await response.json()) as {
+          candidates?: Array<{
+            content?: { parts?: Array<{ text?: string }> };
+          }>;
+        };
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawText) {
+          throw new Error(
+            `Gemini returned empty candidate content (model=${model})`,
+          );
+        }
+
+        if (model !== configuredModel) {
+          this.logger.log(
+            `Gemini clue generation succeeded using fallback model="${model}"`,
+          );
+        }
+
+        return this.parseJsonObject(rawText, `Gemini(${model})`);
+      } finally {
+        clearTimeout(timeout);
       }
-
-      const data = (await response.json()) as {
-        candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> };
-        }>;
-      };
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!rawText) {
-        throw new Error(
-          `Gemini returned empty candidate content (model=${model})`,
-        );
-      }
-
-      return this.parseJsonObject(rawText, `Gemini(${model})`);
-    } finally {
-      clearTimeout(timeout);
     }
+
+    throw lastError;
   }
 
   /**
@@ -420,49 +460,23 @@ export class AiClueService implements OnModuleInit {
     mainCharacterNames: string[],
   ): string {
     const targetLanguageNames: Record<SupportedLanguage, string> = {
-      uk: 'Ukrainian (Українська мова)',
+      uk: 'Ukrainian',
       en: 'English',
-      ru: 'Russian (Русский язык)',
+      ru: 'Russian',
     };
 
-    const mainCharsBlock =
-      mainCharacterNames.length > 0
-        ? `Main characters (FORBIDDEN in Clues 1–4; REQUIRED/ALLOWED in Clues 5–6): ${mainCharacterNames.join(', ')}.`
-        : 'Identify the main protagonist(s) and deuteragonist(s) from the dossier. Keep their names strictly out of Clues 1–4 and use them in Clues 5–6.';
-
     return [
-      `You are an expert anime trivia game master creating 6 progressive deduction clues for a mystery anime.`,
-      ``,
-      `MANDATORY TRANSLATION & TARGET LANGUAGE RULE (targetLang="${lang}"):`,
-      `The source dossier below is in English, but you MUST translate and rewrite ALL 6 clues completely into natural, idiomatic ${targetLanguageNames[lang]} matching targetLang="${lang}".`,
-      `NEVER copy-paste raw English sentences from the dossier when targetLang is 'uk' or 'ru'. Every single clue must read like it was written natively in ${targetLanguageNames[lang]}.`,
-      ``,
-      `OUTPUT FORMAT: Return STRICT JSON ONLY (no markdown fences, no commentary) matching this exact schema:`,
-      `{"hard": ["clue 1", "clue 2"], "medium": ["clue 3", "clue 4"], "easy": ["clue 5", "clue 6"]}`,
-      ``,
-      `STRICTLY FORBIDDEN GENERIC TEMPLATES & PLACEHOLDERS:`,
-      `- NEVER list raw AniList genre or tag names (e.g. NEVER write "у жанрах: Action, Drama, Mecha", "в жанрах: ...", "genres include ...", or comma-separated English tags).`,
-      `- NEVER output placeholder tokens like "[***]" or raw citations like "(Source: ...)" or "(Japanese: ...)".`,
-      `- Every clue must convey concrete story details, trivia, mechanics, scenes, or character identities — NEVER vague filler.`,
-      ``,
-      `EXACT 6-CLUE DIFFICULTY PROGRESSION:`,
-      `- Clues 1 & 2 ("hard"): Obscure Fandom trivia, background details, specific world rules, or minor side-character quirks.`,
-      `  STRICTLY FORBIDDEN in Clues 1–2: NO main character names and NO anime title.`,
-      `- Clues 3 & 4 ("medium"): The core plot premise, central conflict, or unique mechanics of the story (for example: a viral outbreak in Japan and a teenager gaining the power to pull weapons/Voids out of people's chests).`,
-      `  STRICTLY FORBIDDEN in Clues 3–4: NO main character names (refer to them only by role/traits), NO anime title, and NO repeating Clues 1–2.`,
-      `- Clue 5 ("easy"[0]): Iconic turning points, famous memes/scenes, or the names of the main characters (e.g. Shu Ouma, Inori Yuzuriha...) and their roles — without repeating Clues 1–4 or naming the anime.`,
-      `- Clue 6 ("easy"[1] — FINAL GIVEAWAY): A direct, crystal-clear summary combining the release year, animation studio (if known), the protagonist's most famous iconic premise/signature ability, and the main character names so anyone who has watched the show immediately recognizes it — still without writing the exact anime title itself and without repeating earlier clues.`,
-      ``,
-      mainCharsBlock,
-      ``,
-      `NO-REPEAT RULE (CRITICAL):`,
-      `All 6 clues MUST describe 6 completely distinct facts/aspects. Clue 5 and Clue 6 must NEVER paraphrase or repeat Clue 1, 2, 3, or 4.`,
-      ``,
-      `FORBIDDEN ANIME TITLES (NEVER WRITE THESE IN ANY CLUE):`,
-      `${forbiddenTitles.join(' / ') || 'N/A'}`,
-      `If a character's name is identical to the exact anime title, never write that exact title; refer to their surname, nickname, role, or companions instead.`,
-      ``,
-      `STYLE: Keep each clue vivid, concrete, and concise (1–2 sentences).`,
+      `Anime trivia master. Return STRICT JSON ONLY: {"hard":["c1","c2"],"medium":["c3","c4"],"easy":["c5","c6"]}.`,
+      `LANGUAGE: Source dossier is English, but translate and write ALL 6 clues natively in idiomatic ${targetLanguageNames[lang]} (targetLang="${lang}"). NEVER copy English sentences when targetLang is uk/ru.`,
+      `BANNED: Never list genre/tag names (e.g. "у жанрах: Action..."), never write "[***]", "(Source:...)", "(Japanese:...)", or the anime title (${forbiddenTitles.slice(0, 6).join(' / ') || 'N/A'}).`,
+      `TIERS (6 completely distinct facts, zero repetition, 1-2 short sentences each):`,
+      `- hard[0..1]: Obscure trivia, world rules, or minor side-character quirks. NO main character names.`,
+      `- medium[0..1]: Core plot premise, central conflict, or unique story mechanics. NO main character names.`,
+      `- easy[0]: Iconic turning points, famous scenes/memes, or main character names and roles.`,
+      `- easy[1]: Crystal-clear final giveaway combining release year, studio, iconic protagonist ability/premise, and main character names (without naming the anime).`,
+      mainCharacterNames.length > 0
+        ? `Main chars (forbidden in hard/medium, use in easy): ${mainCharacterNames.join(', ')}.`
+        : `Keep main protagonist names out of hard/medium; use them in easy.`,
     ].join('\n');
   }
 
@@ -472,49 +486,44 @@ export class AiClueService implements OnModuleInit {
     lang: SupportedLanguage,
     mainCharacterNames: string[],
   ): string {
-    const languageLabel: Record<SupportedLanguage, string> = {
-      uk: 'Ukrainian (uk)',
-      en: 'English (en)',
-      ru: 'Russian (ru)',
-    };
-
     const cleanedDescription = cleanScrapedText(
       dossier.anilistDescription ?? dossier.description ?? '',
-      1500,
+      650,
     );
-    const cleanedWikiPlot = cleanScrapedText(dossier.wikipediaPlot ?? '', 1400);
+    const wikiMaxLen = cleanedDescription.length >= 420 ? 320 : 600;
+    const cleanedWikiPlot = cleanScrapedText(
+      dossier.wikipediaPlot ?? '',
+      wikiMaxLen,
+    );
     const seasonYear = dossier.seasonYear ?? anime.year ?? null;
-    const studios = (dossier.studios ?? []).filter(Boolean);
+    const studios = (dossier.studios ?? []).filter(Boolean).slice(0, 3);
 
     const charactersText = (dossier.characters ?? [])
-      .slice(0, 10)
+      .slice(0, 6)
       .map(
         (c) =>
-          `- ${c.name}${c.role ? ` [${c.role}]` : ''}: ${cleanScrapedText(c.description ?? '', 240)}`,
+          `${c.name}${c.role ? `[${c.role}]` : ''}: ${cleanScrapedText(c.description ?? '', 90)}`,
       )
       .join('\n');
 
     const triviaText = (dossier.fandomTrivia ?? [])
-      .slice(0, 8)
-      .map((t) => `- ${cleanScrapedText(t, 280)}`)
+      .slice(0, 4)
+      .map((t) => `- ${cleanScrapedText(t, 150)}`)
       .join('\n');
 
-    return [
-      `Target Language (targetLang): ${languageLabel[lang]}`,
-      `Remember: Translate and rewrite EVERY clue natively into ${languageLabel[lang]}. Do NOT leave English sentences untranslated and NEVER output "[***]".`,
-      `Romaji Title (DO NOT MENTION): ${anime.titleRomaji ?? 'N/A'}`,
-      `English Title (DO NOT MENTION): ${anime.titleEn ?? 'N/A'}`,
-      `Ukrainian Title (DO NOT MENTION): ${anime.titleUk ?? 'N/A'}`,
-      `Russian Title (DO NOT MENTION): ${anime.titleRu ?? 'N/A'}`,
-      `Release Year (seasonYear): ${seasonYear ?? 'Unknown'}`,
-      `Animation Studios: ${studios.length > 0 ? studios.join(', ') : 'Unknown'}`,
-      `Format: ${anime.type ?? 'TV'}`,
-      `Main Characters (FORBIDDEN in Clues 1–4; use in Clues 5–6): ${mainCharacterNames.join(', ') || 'See Characters list below'}`,
-      `English Source — AniList Plot Description:\n${cleanedDescription || 'N/A'}`,
-      `English Source — Wikipedia Plot Summary:\n${cleanedWikiPlot || 'N/A'}`,
-      `English Source — Characters:\n${charactersText || 'N/A'}`,
-      `English Source — Fandom Wiki Trivia & Memes:\n${triviaText || 'N/A'}`,
-    ].join('\n\n');
+    const lines = [
+      `targetLang=${lang}`,
+      `Forbidden titles: ${[anime.titleRomaji, anime.titleEn, anime.titleUk, anime.titleRu].filter(Boolean).join(' | ')}`,
+      `Year: ${seasonYear ?? '?'} | Studio: ${studios.join(', ') || '?'} | Format: ${anime.type ?? 'TV'}`,
+      `Main chars: ${mainCharacterNames.join(', ') || 'see below'}`,
+    ];
+
+    if (cleanedDescription) lines.push(`Plot: ${cleanedDescription}`);
+    if (cleanedWikiPlot) lines.push(`Wiki: ${cleanedWikiPlot}`);
+    if (charactersText) lines.push(`Chars:\n${charactersText}`);
+    if (triviaText) lines.push(`Trivia:\n${triviaText}`);
+
+    return lines.join('\n');
   }
 
   private extractMainCharacterNames(dossier: AnimeDossier): string[] {
