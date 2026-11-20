@@ -70,6 +70,58 @@ query ($id: Int, $search: String) {
 }
 `;
 
+/**
+ * Strictly sanitizes scraped text from AniList, Wikipedia, and Fandom before storing or
+ * feeding it to the AI clue generator:
+ *  - Strips HTML tags (`<br>`, `<i>`, `<b>`, etc.) and decodes HTML entities
+ *  - Removes AniList spoiler tags (`~!...!~`) and markdown emphasis
+ *  - Strips trailing/inline source citations like `(Source: Anime News Network)`,
+ *    `(Source: Crunchyroll)`, `(Source: MAL News)`, `[Written by MAL Rewrite]`
+ *  - Strips Wikipedia opening parenthetical romanization/kanji blocks such as
+ *    `(Japanese: ..., Hepburn: ..., lit. "...")`
+ */
+export function cleanScrapedText(
+  text: string | null | undefined,
+  maxLen = 1500,
+): string {
+  if (!text) return '';
+
+  const decoded = text
+    .replace(/~![\s\S]*?!~/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&ndash;/gi, '-')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&#(\d+);/g, (_m, code) => {
+      const n = Number.parseInt(code, 10);
+      return Number.isFinite(n) && n >= 32 && n <= 126
+        ? String.fromCharCode(n)
+        : ' ';
+    })
+    .replace(/__(.+?)__/g, '$1')
+    // Strip source citations like (Source: Anime News Network), (Source: Crunchyroll), (Source: MAL News)
+    .replace(/\(\s*Source\s*:[^)]*\)/gi, '')
+    .replace(/\[\s*Written by[^\]]*\]/gi, '')
+    .replace(/\s*Source\s*:\s*[^.\n]+$/gi, '')
+    // Strip Wikipedia opening parenthetical romanization/kanji blocks (supports nested parens)
+    .replace(
+      /\s*\((?:[^()]|\([^()]*\))*(?:Japanese:|Hepburn:|Romaji:)(?:[^()]|\([^()]*\))*\)/gi,
+      '',
+    )
+    // Strip numeric / note citation markers like [1], [a], [citation needed]
+    .replace(/\[(?:\d+|[a-z]|citation needed)\]/gi, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return decoded.slice(0, maxLen);
+}
+
 @Injectable()
 export class AnimeEnrichmentService {
   private readonly logger = new Logger(AnimeEnrichmentService.name);
@@ -80,10 +132,17 @@ export class AnimeEnrichmentService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Public wrapper around `cleanScrapedText` for service consumers and tests.
+   */
+  cleanScrapedText(text: string | null | undefined, maxLen = 1500): string {
+    return cleanScrapedText(text, maxLen);
+  }
+
+  /**
    * Ensures the target anime has a populated multi-source dossier (AniList + Wikipedia + Fandom).
    * Returns immediately if `isEnriched === true` and `dossier` is already populated.
    * Otherwise fetches external sources in parallel with a strict 4-second timeout per source
-   * and persists the enriched dossier + localized titles back to PostgreSQL.
+   * and persists the sanitized dossier + localized titles back to PostgreSQL.
    */
   async ensureEnriched(animeId: string | number): Promise<Anime> {
     const numericId =
@@ -147,6 +206,25 @@ export class AnimeEnrichmentService {
       ]),
     ).slice(0, 20);
 
+    const sanitizedDescription = cleanScrapedText(
+      anilist?.anilistDescription ||
+        existingDossier.anilistDescription ||
+        existingDossier.description ||
+        '',
+      1500,
+    );
+    const sanitizedWikiPlot = cleanScrapedText(
+      wiki?.wikipediaPlot || existingDossier.wikipediaPlot || '',
+      1400,
+    );
+    const sanitizedTrivia = (
+      (fandom?.fandomTrivia?.length
+        ? fandom.fandomTrivia
+        : existingDossier.fandomTrivia) ?? []
+    )
+      .map((item) => cleanScrapedText(item, 280))
+      .filter((item) => item.length >= 25);
+
     const mergedDossier: AnimeDossier = {
       popularity: anilist?.popularity ?? existingDossier.popularity ?? 0,
       seasonYear:
@@ -159,25 +237,18 @@ export class AnimeEnrichmentService {
         (anilist?.genres?.length ? anilist.genres : existingDossier.genres) ??
         [],
       tags: mergedTags,
-      description:
-        anilist?.anilistDescription ||
-        existingDossier.anilistDescription ||
-        existingDossier.description ||
-        '',
-      anilistDescription:
-        anilist?.anilistDescription ||
-        existingDossier.anilistDescription ||
-        existingDossier.description ||
-        '',
-      wikipediaPlot: wiki?.wikipediaPlot || existingDossier.wikipediaPlot || '',
-      characters:
+      description: sanitizedDescription,
+      anilistDescription: sanitizedDescription,
+      wikipediaPlot: sanitizedWikiPlot,
+      characters: (
         (anilist?.characters?.length
           ? anilist.characters
-          : existingDossier.characters) ?? [],
-      fandomTrivia:
-        (fandom?.fandomTrivia?.length
-          ? fandom.fandomTrivia
-          : existingDossier.fandomTrivia) ?? [],
+          : existingDossier.characters) ?? []
+      ).map((c) => ({
+        ...c,
+        description: cleanScrapedText(c.description, 320),
+      })),
+      fandomTrivia: sanitizedTrivia,
       fandomUrl: fandom?.fandomUrl ?? existingDossier.fandomUrl ?? undefined,
     };
 
@@ -247,7 +318,11 @@ export class AnimeEnrichmentService {
           coverImage?: { large?: string; extraLarge?: string };
           studios?: { nodes?: Array<{ name?: string }> };
           genres?: string[];
-          tags?: Array<{ name?: string; rank?: number; isMediaSpoiler?: boolean }>;
+          tags?: Array<{
+            name?: string;
+            rank?: number;
+            isMediaSpoiler?: boolean;
+          }>;
           description?: string;
           characters?: {
             edges?: Array<{
@@ -292,7 +367,7 @@ export class AnimeEnrichmentService {
       characters.push({
         name,
         role: edge.role ?? 'SUPPORTING',
-        description: this.cleanMarkup(edge.node?.description, 320),
+        description: cleanScrapedText(edge.node?.description, 320),
       });
     }
 
@@ -307,7 +382,7 @@ export class AnimeEnrichmentService {
       studios,
       genres: (media.genres ?? []).filter(Boolean),
       tags,
-      anilistDescription: this.cleanMarkup(media.description, 1500),
+      anilistDescription: cleanScrapedText(media.description, 1500),
       characters,
     };
   }
@@ -408,7 +483,7 @@ export class AnimeEnrichmentService {
     }
 
     return {
-      wikipediaPlot: this.cleanMarkup(page.extract, 1400),
+      wikipediaPlot: cleanScrapedText(page.extract, 1400),
       titleUk,
       titleRu,
     };
@@ -543,7 +618,7 @@ export class AnimeEnrichmentService {
       const liRegex = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
       let liMatch: RegExpExecArray | null;
       while ((liMatch = liRegex.exec(sectionBody)) !== null) {
-        const cleaned = this.cleanMarkup(liMatch[1], 280);
+        const cleaned = cleanScrapedText(liMatch[1], 280);
         if (cleaned.length >= 25 && !items.includes(cleaned)) {
           items.push(cleaned);
         }
@@ -595,24 +670,6 @@ export class AnimeEnrichmentService {
       return dossier as unknown as AnimeDossier;
     }
     return {};
-  }
-
-  private cleanMarkup(text: string | null | undefined, maxLen = 1200): string {
-    if (!text) return '';
-    return text
-      .replace(/~![\s\S]*?!~/g, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&quot;/g, '"')
-      .replace(/&#0?39;/g, "'")
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/__(.+?)__/g, '$1')
-      .replace(/\[\d+\]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, maxLen);
   }
 
   private errorMsg(reason: unknown): string {

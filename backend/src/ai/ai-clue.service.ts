@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Anime } from '@prisma/client';
+import { cleanScrapedText } from '../anime/anime-enrichment.service';
 import { RedisService } from '../redis/redis.service';
 
 export type SupportedLanguage = 'uk' | 'en' | 'ru';
@@ -38,6 +39,8 @@ const CYRILLIC_RE = /[А-Яа-яЁёІіЇїЄєҐґ]/;
 const LEAKED_ENGLISH_SENTENCE_RE = /\b[a-z]{3,}(?:\s+[a-z]{2,}){5,}\b/;
 const BANNED_GENRE_TEMPLATE_RE =
   /(?:у жанрах\s*:|в жанрах\s*:|core genre blend\s*:|primary genres\s*:|основні жанри\s*:|основные жанры\s*:)/i;
+const SCRAPER_ARTIFACT_RE =
+  /(?:\[\*{3}\]|\(\s*Source\s*:|\(\s*Japanese\s*:|Hepburn\s*:)/i;
 
 @Injectable()
 export class AiClueService implements OnModuleInit {
@@ -74,10 +77,11 @@ export class AiClueService implements OnModuleInit {
     );
 
     if (!groqLoaded && !geminiLoaded) {
-      this.logger.error(
+      const msg =
         'Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in backend/.env! ' +
-          'Clue generation will fall back to offline synthesis (isFallback=true) until a valid key is set.',
-      );
+        'Clue generation will fall back to offline synthesis (isFallback=true) until a valid key is set.';
+      this.logger.error(msg);
+      console.error(`[AiClueService] ${msg}`);
     }
   }
 
@@ -89,8 +93,8 @@ export class AiClueService implements OnModuleInit {
    * Execution order:
    *  1. Groq (configured model, auto-falling back to live Groq chat models on 404 model_not_found)
    *  2. Google Gemini (`gemini-2.5-flash`)
-   *  3. Emergency Redis cache (`ai_clues:<animeId>:<lang>`, storing ONLY valid LLM outputs)
-   *  4. Offline deterministic dossier synthesis (`isFallback: true`)
+   *  3. Emergency Redis cache (`ai_clues:<animeId>:<lang>`, bypassing/purging any stale fallback entries)
+   *  4. Offline deterministic dossier synthesis (`isFallback: true`, zero `[***]` or scraper artifacts)
    */
   async generateClues(
     anime: Anime,
@@ -135,9 +139,9 @@ export class AiClueService implements OnModuleInit {
     } catch (groqError) {
       groqErrMsg =
         groqError instanceof Error ? groqError.message : String(groqError);
-      this.logger.error(
-        `[Groq FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${groqErrMsg}. Falling back to Gemini...`,
-      );
+      const errLine = `[Groq FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${groqErrMsg}`;
+      this.logger.error(errLine);
+      console.error(errLine);
     }
 
     // 2. Fallback: Google Gemini (gemini-2.5-flash)
@@ -160,9 +164,9 @@ export class AiClueService implements OnModuleInit {
         geminiError instanceof Error
           ? geminiError.message
           : String(geminiError);
-      this.logger.error(
-        `[Gemini FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${geminiErrMsg}. Checking Redis emergency LLM backup...`,
-      );
+      const errLine = `[Gemini FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${geminiErrMsg}`;
+      this.logger.error(errLine);
+      console.error(errLine);
     }
 
     // 3. Emergency Backup: Language-scoped Redis cache `ai_clues:<animeId>:<lang>` (LLM outputs only)
@@ -179,10 +183,12 @@ export class AiClueService implements OnModuleInit {
     }
 
     // 4. Offline deterministic dossier fallback (flagged isFallback: true, NOT cached to Redis)
-    this.logger.error(
+    const fallbackNotice =
       `[AI FALLBACK ACTIVE] Both Groq and Gemini failed for animeId=${anime.id} (${normalizedLang}). ` +
-        `GroqError="${groqErrMsg}" | GeminiError="${geminiErrMsg}"`,
-    );
+      `GroqError="${groqErrMsg}" | GeminiError="${geminiErrMsg}"`;
+    this.logger.error(fallbackNotice);
+    console.error(fallbackNotice);
+
     return {
       ...this.synthesizeFallbackFromDossier(
         anime,
@@ -259,10 +265,9 @@ export class AiClueService implements OnModuleInit {
         if (!response.ok) {
           const errBody = await response.text().catch(() => '');
           lastError = new Error(
-            `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
+            `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
           );
 
-          // Automatically try the next live Groq model if the configured model was deprecated/not found
           if (
             response.status === 404 ||
             errBody.includes('model_not_found') ||
@@ -352,7 +357,7 @@ export class AiClueService implements OnModuleInit {
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
         throw new Error(
-          `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
+          `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
         );
       }
 
@@ -374,18 +379,37 @@ export class AiClueService implements OnModuleInit {
     }
   }
 
+  /**
+   * Strips markdown code fences (` ```json ... ``` `) and extracts the JSON object cleanly
+   * before calling `JSON.parse()`.
+   */
   private parseJsonObject(rawText: string, providerLabel: string): unknown {
-    const cleaned = rawText
-      .trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
+    let cleaned = rawText.trim();
+
+    // Strip fenced markdown code blocks anywhere in the response
+    const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      cleaned = fenceMatch[1].trim();
+    } else {
+      cleaned = cleaned
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+    }
+
+    // Extract outermost JSON object if surrounded by explanatory text
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+
     try {
       return JSON.parse(cleaned);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `${providerLabel} returned invalid JSON (${msg}): ${cleaned.slice(0, 200)}`,
+        `${providerLabel} returned invalid JSON (${msg}): ${cleaned.slice(0, 240)}`,
       );
     }
   }
@@ -413,11 +437,12 @@ export class AiClueService implements OnModuleInit {
       `The source dossier below is in English, but you MUST translate and rewrite ALL 6 clues completely into natural, idiomatic ${targetLanguageNames[lang]} matching targetLang="${lang}".`,
       `NEVER copy-paste raw English sentences from the dossier when targetLang is 'uk' or 'ru'. Every single clue must read like it was written natively in ${targetLanguageNames[lang]}.`,
       ``,
-      `OUTPUT FORMAT: Return STRICT JSON ONLY matching this exact schema:`,
+      `OUTPUT FORMAT: Return STRICT JSON ONLY (no markdown fences, no commentary) matching this exact schema:`,
       `{"hard": ["clue 1", "clue 2"], "medium": ["clue 3", "clue 4"], "easy": ["clue 5", "clue 6"]}`,
       ``,
-      `STRICTLY FORBIDDEN GENERIC TEMPLATES:`,
+      `STRICTLY FORBIDDEN GENERIC TEMPLATES & PLACEHOLDERS:`,
       `- NEVER list raw AniList genre or tag names (e.g. NEVER write "у жанрах: Action, Drama, Mecha", "в жанрах: ...", "genres include ...", or comma-separated English tags).`,
+      `- NEVER output placeholder tokens like "[***]" or raw citations like "(Source: ...)" or "(Japanese: ...)".`,
       `- Every clue must convey concrete story details, trivia, mechanics, scenes, or character identities — NEVER vague filler.`,
       ``,
       `EXACT 6-CLUE DIFFICULTY PROGRESSION:`,
@@ -453,11 +478,11 @@ export class AiClueService implements OnModuleInit {
       ru: 'Russian (ru)',
     };
 
-    const cleanedDescription = this.cleanHtml(
+    const cleanedDescription = cleanScrapedText(
       dossier.anilistDescription ?? dossier.description ?? '',
       1500,
     );
-    const cleanedWikiPlot = this.cleanHtml(dossier.wikipediaPlot ?? '', 1400);
+    const cleanedWikiPlot = cleanScrapedText(dossier.wikipediaPlot ?? '', 1400);
     const seasonYear = dossier.seasonYear ?? anime.year ?? null;
     const studios = (dossier.studios ?? []).filter(Boolean);
 
@@ -465,18 +490,18 @@ export class AiClueService implements OnModuleInit {
       .slice(0, 10)
       .map(
         (c) =>
-          `- ${c.name}${c.role ? ` [${c.role}]` : ''}: ${this.cleanHtml(c.description ?? '', 240)}`,
+          `- ${c.name}${c.role ? ` [${c.role}]` : ''}: ${cleanScrapedText(c.description ?? '', 240)}`,
       )
       .join('\n');
 
     const triviaText = (dossier.fandomTrivia ?? [])
       .slice(0, 8)
-      .map((t) => `- ${this.cleanHtml(t, 280)}`)
+      .map((t) => `- ${cleanScrapedText(t, 280)}`)
       .join('\n');
 
     return [
       `Target Language (targetLang): ${languageLabel[lang]}`,
-      `Remember: Translate and rewrite EVERY clue natively into ${languageLabel[lang]}. Do NOT leave English sentences untranslated.`,
+      `Remember: Translate and rewrite EVERY clue natively into ${languageLabel[lang]}. Do NOT leave English sentences untranslated and NEVER output "[***]".`,
       `Romaji Title (DO NOT MENTION): ${anime.titleRomaji ?? 'N/A'}`,
       `English Title (DO NOT MENTION): ${anime.titleEn ?? 'N/A'}`,
       `Ukrainian Title (DO NOT MENTION): ${anime.titleUk ?? 'N/A'}`,
@@ -530,7 +555,7 @@ export class AiClueService implements OnModuleInit {
           )
           .map((t) => t.trim()),
       ),
-    );
+    ).sort((a, b) => b.length - a.length);
   }
 
   private validateAndSanitizeClueSet(
@@ -560,10 +585,15 @@ export class AiClueService implements OnModuleInit {
       throw new Error('AI response contained duplicate clues across tiers');
     }
 
-    // Reject banned generic genre-list templates
+    // Reject banned generic genre-list templates or leaked scraper artifacts
     if (allClues.some((c) => BANNED_GENRE_TEMPLATE_RE.test(c))) {
       throw new Error(
         'AI response contained forbidden generic genre-list template wording',
+      );
+    }
+    if (allClues.some((c) => SCRAPER_ARTIFACT_RE.test(c))) {
+      throw new Error(
+        'AI response contained forbidden placeholder or raw scraper citation artifact',
       );
     }
 
@@ -580,13 +610,15 @@ export class AiClueService implements OnModuleInit {
       throw new Error(`Invalid "${tier}" clue array in AI response`);
     }
 
-    const first = this.scrubForbiddenTitles(
-      String(value[0] ?? '').trim(),
+    const first = this.replaceForbiddenTitlesNaturally(
+      cleanScrapedText(String(value[0] ?? ''), 500),
       forbiddenTitles,
+      lang,
     );
-    const second = this.scrubForbiddenTitles(
-      String(value[1] ?? '').trim(),
+    const second = this.replaceForbiddenTitlesNaturally(
+      cleanScrapedText(String(value[1] ?? ''), 500),
       forbiddenTitles,
+      lang,
     );
 
     if (!first || !second) {
@@ -612,18 +644,30 @@ export class AiClueService implements OnModuleInit {
     return [first, second];
   }
 
-  private scrubForbiddenTitles(
+  /**
+   * Replaces accidental anime title leaks with natural language in the target locale
+   * rather than injecting ugly `[***]` placeholders.
+   */
+  private replaceForbiddenTitlesNaturally(
     text: string,
     forbiddenTitles: string[],
+    lang: SupportedLanguage,
   ): string {
-    let scrubbed = text;
+    const replacementByLang: Record<SupportedLanguage, string> = {
+      uk: 'це аніме',
+      ru: 'это аниме',
+      en: 'this anime',
+    };
+    const replacement = replacementByLang[lang];
+
+    let sanitized = text.replace(/\[\*{3}\]/g, replacement);
     for (const title of forbiddenTitles) {
       if (title.length < 4) continue;
       const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(escaped, 'gi');
-      scrubbed = scrubbed.replace(regex, '[***]');
+      sanitized = sanitized.replace(regex, replacement);
     }
-    return scrubbed;
+    return sanitized.replace(/\s+/g, ' ').trim();
   }
 
   private scrubMainNames(text: string, mainCharacterNames: string[]): string {
@@ -644,29 +688,36 @@ export class AiClueService implements OnModuleInit {
     return scrubbed;
   }
 
-  private cleanHtml(text: string, maxLen = 1400): string {
-    if (!text) return '';
-    return text
-      .replace(/~![\s\S]*?!~/g, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&quot;/g, '"')
-      .replace(/&#0?39;/g, "'")
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/__(.+?)__/g, '$1')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, maxLen);
-  }
-
-  private splitSentences(text: string): string[] {
+  private splitCleanPlotSentences(
+    text: string,
+    forbiddenTitles: string[],
+  ): string[] {
     if (!text) return [];
-    return text
+    const cleaned = cleanScrapedText(text, 1600);
+    return cleaned
       .split(/(?<=[.!?])\s+/)
       .map((s) => s.trim())
-      .filter((s) => s.length >= 25);
+      .filter((s) => {
+        if (s.length < 30) return false;
+        // Skip Wikipedia boilerplate definition sentences ("X is a 2011 Japanese anime television series...")
+        if (
+          /\bis a(?:n)?\s+(?:\d{4}\s+)?Japanese\s+(?:anime|manga|light novel|original|animated)/i.test(
+            s,
+          )
+        ) {
+          return false;
+        }
+        // Skip sentences that still contain raw title strings so we don't need awkward redactions
+        const lower = s.toLowerCase();
+        if (
+          forbiddenTitles.some(
+            (t) => t.length >= 4 && lower.includes(t.toLowerCase()),
+          )
+        ) {
+          return false;
+        }
+        return true;
+      });
   }
 
   private extractDossier(anime: Anime): AnimeDossier {
@@ -692,6 +743,9 @@ export class AiClueService implements OnModuleInit {
     lang: SupportedLanguage,
     clueSet: GeneratedClueSet,
   ): Promise<void> {
+    if (clueSet.isFallback) {
+      return;
+    }
     try {
       const key = this.buildRedisCacheKey(animeId, lang);
       await this.redisService
@@ -702,6 +756,8 @@ export class AiClueService implements OnModuleInit {
             hard: clueSet.hard,
             medium: clueSet.medium,
             easy: clueSet.easy,
+            isFallback: false,
+            provider: clueSet.provider ?? 'groq',
           }),
           'EX',
           AiClueService.REDIS_CACHE_TTL_SECONDS,
@@ -712,30 +768,45 @@ export class AiClueService implements OnModuleInit {
     }
   }
 
+  /**
+   * Reads a cached LLM backup from Redis while automatically clearing and bypassing
+   * any stale fallback entries, genre-template entries, or `[***]` / scraper artifacts.
+   */
   private async getCachedBackupClues(
     animeId: number,
     lang: SupportedLanguage,
   ): Promise<GeneratedClueSet | null> {
+    const key = this.buildRedisCacheKey(animeId, lang);
     try {
-      const key = this.buildRedisCacheKey(animeId, lang);
       const raw = await this.redisService.getClient().get(key);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as GeneratedClueSet;
       if (
-        Array.isArray(parsed.hard) &&
-        parsed.hard.length === 2 &&
-        Array.isArray(parsed.medium) &&
-        parsed.medium.length === 2 &&
-        Array.isArray(parsed.easy) &&
-        parsed.easy.length === 2
+        parsed.isFallback === true ||
+        parsed.provider === 'fallback' ||
+        !Array.isArray(parsed.hard) ||
+        parsed.hard.length !== 2 ||
+        !Array.isArray(parsed.medium) ||
+        parsed.medium.length !== 2 ||
+        !Array.isArray(parsed.easy) ||
+        parsed.easy.length !== 2
       ) {
-        const all = [...parsed.hard, ...parsed.medium, ...parsed.easy];
-        if (all.some((c) => BANNED_GENRE_TEMPLATE_RE.test(c))) {
-          return null;
-        }
-        return parsed;
+        await this.redisService.getClient().del(key);
+        return null;
       }
-      return null;
+
+      const all = [...parsed.hard, ...parsed.medium, ...parsed.easy];
+      if (
+        all.some(
+          (c) =>
+            BANNED_GENRE_TEMPLATE_RE.test(c) || SCRAPER_ARTIFACT_RE.test(c),
+        )
+      ) {
+        await this.redisService.getClient().del(key);
+        return null;
+      }
+
+      return parsed;
     } catch {
       return null;
     }
@@ -743,9 +814,8 @@ export class AiClueService implements OnModuleInit {
 
   /**
    * Offline fallback when both Groq and Gemini are unavailable and no LLM backup exists in Redis.
-   * Splits real plot sentences from `dossier.description` / `wikipediaPlot`, Fandom trivia,
-   * `seasonYear`, `studios`, and `characters` across 6 distinct steps without ever outputting
-   * generic genre-list templates.
+   * Uses strictly sanitized sentences from `description`, `characters`, `seasonYear`, and `studios`
+   * with ZERO `[***]` tokens, ZERO `(Japanese: ...)` headers, and ZERO `(Source: ...)` citations.
    */
   private synthesizeFallbackFromDossier(
     anime: Anime,
@@ -762,37 +832,51 @@ export class AiClueService implements OnModuleInit {
       .filter((c) => (c.role ?? '').toUpperCase() === 'MAIN')
       .slice(0, 2)
       .map((c) => {
-        const firstLine = this.splitSentences(
-          this.cleanHtml(c.description ?? '', 260),
-        )[0];
-        return firstLine ? `${c.name} — ${firstLine}` : c.name;
+        const descSentences = this.splitCleanPlotSentences(
+          c.description ?? '',
+          forbiddenTitles,
+        );
+        return descSentences[0] ? `${c.name} — ${descSentences[0]}` : c.name;
       });
 
-    const cleanedDesc = this.cleanHtml(
-      dossier.anilistDescription ?? dossier.description ?? '',
-      1500,
-    );
-    const cleanedWiki = this.cleanHtml(dossier.wikipediaPlot ?? '', 1200);
     const plotSentences = Array.from(
       new Set([
-        ...this.splitSentences(cleanedDesc),
-        ...this.splitSentences(cleanedWiki),
+        ...this.splitCleanPlotSentences(
+          dossier.anilistDescription ?? dossier.description ?? '',
+          forbiddenTitles,
+        ),
+        ...this.splitCleanPlotSentences(
+          dossier.wikipediaPlot ?? '',
+          forbiddenTitles,
+        ),
       ]),
     );
 
     const triviaItems = (dossier.fandomTrivia ?? [])
-      .map((t) => this.cleanHtml(t, 260))
-      .filter((t) => t.length >= 25);
+      .map((t) => cleanScrapedText(t, 260))
+      .filter(
+        (t) =>
+          t.length >= 25 &&
+          !forbiddenTitles.some(
+            (title) =>
+              title.length >= 4 &&
+              t.toLowerCase().includes(title.toLowerCase()),
+          ),
+      );
 
     const seasonYear = dossier.seasonYear ?? anime.year ?? null;
     const studios = (dossier.studios ?? []).filter(Boolean);
     const studioText = studios.join(', ');
     const formatText = anime.type ?? 'TV';
 
-    const scrubAll = (s: string) =>
-      this.scrubForbiddenTitles(s, forbiddenTitles);
-    const scrubNoMain = (s: string) =>
-      this.scrubMainNames(scrubAll(s), mainChars);
+    const sanitize = (s: string) =>
+      this.replaceForbiddenTitlesNaturally(
+        cleanScrapedText(s, 360),
+        forbiddenTitles,
+        lang,
+      );
+    const sanitizeNoMain = (s: string) =>
+      sanitize(this.scrubMainNames(s, mainChars));
 
     const plot1 = plotSentences[0] ?? '';
     const plot2 = plotSentences[1] ?? '';
@@ -807,13 +891,13 @@ export class AiClueService implements OnModuleInit {
 
     if (lang === 'uk') {
       const hard1 = rawHard1
-        ? `Цікавий факт про світ цієї історії: ${scrubNoMain(rawHard1)}`
+        ? `Деталь світу: ${sanitizeNoMain(rawHard1)}`
         : studioText
           ? `Над виробництвом цього тайтлу (${formatText}) працювала студія ${studioText}.`
-          : `Це аніме формату ${formatText} вирізняється впізнаваними правилами свого світу та прихованими деталями лору.`;
+          : `Цей тайтл формату ${formatText} вирізняється незвичними правилами свого всесвіту та впізнаваною атмосферою.`;
 
       const hard2 = rawHard2
-        ? `Фандомна деталь: ${scrubNoMain(rawHard2)}`
+        ? `Факт зі світу історії: ${sanitizeNoMain(rawHard2)}`
         : supportingChars.length > 0
           ? `Серед другорядних персонажів історії з'являються: ${supportingChars.join(', ')}.`
           : seasonYear
@@ -821,16 +905,16 @@ export class AiClueService implements OnModuleInit {
             : `У центрі подій стоїть незвичний конфлікт із нестандартними правилами протистояння.`;
 
       const med1 = rawMed1
-        ? `Сюжетна зав'язка: ${scrubNoMain(rawMed1)}`
-        : `Головний герой опиняється у центрі кризи, яка змушує його по-новому поглянути на власні можливості.`;
+        ? `Сюжетна зав'язка: ${sanitizeNoMain(rawMed1)}`
+        : `Головний герой опиняється у центрі кризи, яка змушує його по-новому розкрити власні можливості.`;
 
       const med2 = rawMed2
-        ? `Розвиток конфлікту: ${scrubNoMain(rawMed2)}`
+        ? `Розвиток подій: ${sanitizeNoMain(rawMed2)}`
         : `Ключова механіка історії поступово змінює баланс сил між ворогуючими сторонами.`;
 
       const easy1 =
         mainCharDetails.length > 0
-          ? `Ключові герої цієї історії: ${scrubAll(mainCharDetails.join(' | '))}`
+          ? `Ключові герої цієї історії: ${sanitize(mainCharDetails.join(' | '))}`
           : mainChars.length > 0
             ? `Головними дійовими особами цієї історії є ${mainChars.join(', ')}.`
             : `Сюжетний поворот із головним героєм став однією з найвідоміших сцен цього аніме.`;
@@ -841,28 +925,28 @@ export class AiClueService implements OnModuleInit {
       if (mainChars.length > 0) {
         giveawayParts.push(`головні персонажі — ${mainChars.join(', ')}`);
       }
-      const easy2 = scrubAll(
+      const easy2 = sanitize(
         giveawayParts.length > 0
           ? `Фінальна підказка: ${giveawayParts.join('; ')}.${rawEasyGiveawayPlot ? ` Сюжет: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
-          : `Фінальна підказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'культова історія з яскравим головним героєм і впізнаваною розвʼязкою.'}`,
+          : `Фінальна підказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'відома історія з яскравим головним героєм і впізнаваною розвʼязкою.'}`,
       );
 
       return {
-        hard: [scrubAll(hard1), scrubAll(hard2)],
-        medium: [scrubAll(med1), scrubAll(med2)],
-        easy: [scrubAll(easy1), scrubAll(easy2)],
+        hard: [sanitize(hard1), sanitize(hard2)],
+        medium: [sanitize(med1), sanitize(med2)],
+        easy: [sanitize(easy1), sanitize(easy2)],
       };
     }
 
     if (lang === 'ru') {
       const hard1 = rawHard1
-        ? `Интересный факт о мире этой истории: ${scrubNoMain(rawHard1)}`
+        ? `Деталь мира: ${sanitizeNoMain(rawHard1)}`
         : studioText
           ? `Над созданием этого тайтла (${formatText}) работала студия ${studioText}.`
-          : `Это аниме формата ${formatText} выделяется узнаваемыми правилами мира и скрытыми деталями лора.`;
+          : `Этот тайтл формата ${formatText} выделяется необычными правилами своей вселенной и узнаваемой атмосферой.`;
 
       const hard2 = rawHard2
-        ? `Деталь из фандома: ${scrubNoMain(rawHard2)}`
+        ? `Факт из мира истории: ${sanitizeNoMain(rawHard2)}`
         : supportingChars.length > 0
           ? `Среди второстепенных персонажей истории фигурируют: ${supportingChars.join(', ')}.`
           : seasonYear
@@ -870,16 +954,16 @@ export class AiClueService implements OnModuleInit {
             : `В центре событий лежит нестандартный конфликт с особыми правилами противостояния.`;
 
       const med1 = rawMed1
-        ? `Завязка сюжета: ${scrubNoMain(rawMed1)}`
+        ? `Завязка сюжета: ${sanitizeNoMain(rawMed1)}`
         : `Главный герой оказывается в центре кризиса, который заставляет его раскрыть необычные способности.`;
 
       const med2 = rawMed2
-        ? `Развитие конфликта: ${scrubNoMain(rawMed2)}`
+        ? `Развитие событий: ${sanitizeNoMain(rawMed2)}`
         : `Ключевая механика истории постепенно меняет расстановку сил между сторонами конфликта.`;
 
       const easy1 =
         mainCharDetails.length > 0
-          ? `Ключевые герои этой истории: ${scrubAll(mainCharDetails.join(' | '))}`
+          ? `Ключевые герои этой истории: ${sanitize(mainCharDetails.join(' | '))}`
           : mainChars.length > 0
             ? `Главными действующими лицами этой истории являются ${mainChars.join(', ')}.`
             : `Кульминационный поворот с главным героем стал одной из самых узнаваемых сцен этого аниме.`;
@@ -890,27 +974,27 @@ export class AiClueService implements OnModuleInit {
       if (mainChars.length > 0) {
         giveawayParts.push(`главные персонажи — ${mainChars.join(', ')}`);
       }
-      const easy2 = scrubAll(
+      const easy2 = sanitize(
         giveawayParts.length > 0
           ? `Финальная подсказка: ${giveawayParts.join('; ')}.${rawEasyGiveawayPlot ? ` Сюжет: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
-          : `Финальная подсказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'культовая история с ярким протагонистом и запоминающейся развязкой.'}`,
+          : `Финальная подсказка (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'известная история с ярким протагонистом и запоминающейся развязкой.'}`,
       );
 
       return {
-        hard: [scrubAll(hard1), scrubAll(hard2)],
-        medium: [scrubAll(med1), scrubAll(med2)],
-        easy: [scrubAll(easy1), scrubAll(easy2)],
+        hard: [sanitize(hard1), sanitize(hard2)],
+        medium: [sanitize(med1), sanitize(med2)],
+        easy: [sanitize(easy1), sanitize(easy2)],
       };
     }
 
     const hard1 = rawHard1
-      ? `World & trivia detail: ${scrubNoMain(rawHard1)}`
+      ? `World detail: ${sanitizeNoMain(rawHard1)}`
       : studioText
         ? `This ${formatText} title was animated by ${studioText}.`
         : `This ${formatText} series features distinctive world rules and background lore details.`;
 
     const hard2 = rawHard2
-      ? `Community trivia: ${scrubNoMain(rawHard2)}`
+      ? `Community trivia: ${sanitizeNoMain(rawHard2)}`
       : supportingChars.length > 0
         ? `Supporting characters in this world include ${supportingChars.join(', ')}.`
         : seasonYear
@@ -918,16 +1002,16 @@ export class AiClueService implements OnModuleInit {
           : `Its story revolves around an unusual conflict with high-stakes rules.`;
 
     const med1 = rawMed1
-      ? `Story premise: ${scrubNoMain(rawMed1)}`
+      ? `Story premise: ${sanitizeNoMain(rawMed1)}`
       : `The protagonist is pulled into a sudden crisis that forces them to rely on an extraordinary power.`;
 
     const med2 = rawMed2
-      ? `Central conflict: ${scrubNoMain(rawMed2)}`
+      ? `Central conflict: ${sanitizeNoMain(rawMed2)}`
       : `A signature mechanic drives the escalating struggle between rival factions.`;
 
     const easy1 =
       mainCharDetails.length > 0
-        ? `Lead characters: ${scrubAll(mainCharDetails.join(' | '))}`
+        ? `Lead characters: ${sanitize(mainCharDetails.join(' | '))}`
         : mainChars.length > 0
           ? `The main characters leading this story are ${mainChars.join(', ')}.`
           : `Its signature plot twist and iconic protagonist moments are immediately recognizable to fans.`;
@@ -938,16 +1022,16 @@ export class AiClueService implements OnModuleInit {
     if (mainChars.length > 0) {
       enGiveawayParts.push(`starring ${mainChars.join(', ')}`);
     }
-    const easy2 = scrubAll(
+    const easy2 = sanitize(
       enGiveawayParts.length > 0
         ? `Final giveaway: ${enGiveawayParts.join(', ')}.${rawEasyGiveawayPlot ? ` Premise: ${rawEasyGiveawayPlot.slice(0, 220)}` : ''}`
         : `Final giveaway (${formatText}): ${rawEasyGiveawayPlot.slice(0, 260) || 'An iconic series defined by its unforgettable lead and premise.'}`,
     );
 
     return {
-      hard: [scrubAll(hard1), scrubAll(hard2)],
-      medium: [scrubAll(med1), scrubAll(med2)],
-      easy: [scrubAll(easy1), scrubAll(easy2)],
+      hard: [sanitize(hard1), sanitize(hard2)],
+      medium: [sanitize(med1), sanitize(med2)],
+      easy: [sanitize(easy1), sanitize(easy2)],
     };
   }
 }
