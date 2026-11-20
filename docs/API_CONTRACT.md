@@ -315,12 +315,12 @@ Performs NULL-safe case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_t
 ### `AnimeService.getRandomAnime(excludeIds: string[], currentStreak: number)`
 
 Selects a random eligible `Anime` record (requiring non-null `coverUrl` and `anilistId`) ordered by `popularity DESC`, scaling the candidate pool by the player's `currentStreak`:
-- `currentStreak < 4`: random from the **top 150** most popular anime.
-- `currentStreak < 10`: random from the **top 600** most popular anime.
-- `currentStreak < 20`: random from the **top 2000** most popular anime.
-- `currentStreak >= 20`: random from the **entire catalog** (15,000+ titles).
+- `currentStreak < 4` (Rounds 1–4): random from the **top 100** mainstream hits (`popularity > 0`, `type IN ('TV', 'MOVIE')`).
+- `currentStreak < 10` (Rounds 5–10): random from the **top 400** mainstream hits (`popularity > 0`, `type IN ('TV', 'MOVIE')`).
+- `currentStreak < 20` (Rounds 11–20): random from the **top 1,500** ranked titles (`popularity > 0`).
+- `currentStreak >= 20`: random from the **entire catalog** (30,000+ titles).
 
-Always excludes `excludeIds` (last `30` played anime IDs stored in Redis `game:solo:<userId>`), falling back to all eligible catalog records within the tier if every eligible ID is in `excludeIds`.
+Always excludes `excludeIds` (last `30` played anime IDs stored in Redis `game:solo:<userId>`), and gracefully falls back to localized titles (`titleUk` or `titleRu` populated) if `popularity > 0` scores have not been synced yet (`npm run catalog:sync-popularity`).
 
 ---
 

@@ -20,7 +20,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed",
-    "catalog:import": "python3 ../scripts/import_full_catalog.py"
+    "catalog:import": "python3 ../scripts/import_full_catalog.py",
+    "catalog:sync-popularity": "python3 ../scripts/sync_popularity.py"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
