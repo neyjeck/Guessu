@@ -1,5 +1,9 @@
 import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
-import { AnimeSearchResult, AnimeService } from './anime.service';
+import {
+  AnimeSearchResult,
+  AnimeService,
+  CharacterSearchResult,
+} from './anime.service';
 import { SearchAnimeDto } from './dto/search-anime.dto';
 
 @Controller('anime')
@@ -9,6 +13,13 @@ export class AnimeController {
   @Get('search')
   async search(@Query() dto: SearchAnimeDto): Promise<AnimeSearchResult[]> {
     return this.animeService.searchMultilingual(dto);
+  }
+
+  @Get('characters/search')
+  async searchCharacters(
+    @Query('q') q?: string,
+  ): Promise<CharacterSearchResult[]> {
+    return this.animeService.searchCharacters(q ?? '');
   }
 
   @Get(':id')

@@ -25,22 +25,31 @@ enum GameStatus {
 }
 
 model User {
-  id              String        @id @default(uuid())
-  username        String        @unique
-  email           String        @unique
-  passwordHash    String?
-  googleId        String?       @unique
-  isEmailVerified Boolean       @default(false)
-  role            Role          @default(USER)
-  avatarUrl       String?
-  profileTheme    String        @default("default")
-  badgeTitle      String        @default("Rookie Guesser")
-  rating          Int           @default(1000)
-  currentStreak   Int           @default(0)
-  maxStreak       Int           @default(0)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  gameSessions    GameSession[]
+  id                 String        @id @default(uuid())
+  username           String        @unique
+  email              String        @unique
+  passwordHash       String?
+  googleId           String?       @unique
+  isEmailVerified    Boolean       @default(false)
+  role               Role          @default(USER)
+  avatarUrl          String?
+  bio                String?
+  favoriteAnime      Json?
+  favoriteCharacters Json?
+  theme              String        @default("midnight")
+  profileTheme       String        @default("default")
+  badgeTitle         String        @default("Rookie Guesser")
+  isPublicProfile    Boolean       @default(true)
+  showStats          Boolean       @default(true)
+  showFavorites      Boolean       @default(true)
+  gamesPlayed        Int           @default(0)
+  gamesWon           Int           @default(0)
+  rating             Int           @default(1000)
+  currentStreak      Int           @default(0)
+  maxStreak          Int           @default(0)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  gameSessions       GameSession[]
 }
 
 model Anime {
