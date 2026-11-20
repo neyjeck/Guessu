@@ -4,11 +4,14 @@ import { Anime } from '@prisma/client';
 import { RedisService } from '../redis/redis.service';
 
 export type SupportedLanguage = 'uk' | 'en' | 'ru';
+export type ClueProvider = 'groq' | 'gemini' | 'redis-backup' | 'fallback';
 
 export interface GeneratedClueSet {
   hard: [string, string];
   medium: [string, string];
   easy: [string, string];
+  isFallback?: boolean;
+  provider?: ClueProvider;
 }
 
 export interface AnimeDossierCharacter {
@@ -32,6 +35,7 @@ export interface AnimeDossier {
 }
 
 const CYRILLIC_RE = /[А-Яа-яЁёІіЇїЄєҐґ]/;
+const LEAKED_ENGLISH_SENTENCE_RE = /\b[a-z]{3,}(?:\s+[a-z]{2,}){5,}\b/;
 const BANNED_GENRE_TEMPLATE_RE =
   /(?:у жанрах\s*:|в жанрах\s*:|core genre blend\s*:|primary genres\s*:|основні жанри\s*:|основные жанры\s*:)/i;
 
@@ -39,7 +43,13 @@ const BANNED_GENRE_TEMPLATE_RE =
 export class AiClueService implements OnModuleInit {
   private readonly logger = new Logger(AiClueService.name);
   private static readonly REDIS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
-  private static readonly REQUEST_TIMEOUT_MS = 12_000;
+  private static readonly REQUEST_TIMEOUT_MS = 18_000;
+  private static readonly GROQ_FALLBACK_MODELS = [
+    'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.8-27b',
+    'openai/gpt-oss-20b',
+  ];
 
   constructor(
     private readonly configService: ConfigService,
@@ -47,17 +57,26 @@ export class AiClueService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    const groqConfigured = this.hasValidApiKey('GROQ_API_KEY', 'gsk_your_');
-    const geminiConfigured = this.hasValidApiKey('GEMINI_API_KEY', 'your_');
-    if (!groqConfigured && !geminiConfigured) {
+    const groqLoaded = this.hasValidApiKey('GROQ_API_KEY', 'gsk_your_');
+    const geminiLoaded = this.hasValidApiKey('GEMINI_API_KEY', 'your_');
+    const groqModel =
+      this.configService.get<string>('GROQ_MODEL')?.trim() ||
+      'llama-3.3-70b-versatile';
+    const geminiModel =
+      this.configService.get<string>('GEMINI_MODEL')?.trim() ||
+      'gemini-2.5-flash';
+
+    this.logger.log(
+      `Groq API key loaded: ${groqLoaded} (configured model=${groqModel})`,
+    );
+    this.logger.log(
+      `Gemini API key loaded: ${geminiLoaded} (configured model=${geminiModel})`,
+    );
+
+    if (!groqLoaded && !geminiLoaded) {
       this.logger.error(
         'Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in backend/.env! ' +
-          'Clue generation will fall back to offline dossier synthesis until a valid key is set.',
-      );
-    } else {
-      this.logger.log(
-        `AI clue providers ready: Groq=${groqConfigured ? 'configured' : 'missing'}, ` +
-          `Gemini=${geminiConfigured ? 'configured' : 'missing'}`,
+          'Clue generation will fall back to offline synthesis (isFallback=true) until a valid key is set.',
       );
     }
   }
@@ -68,10 +87,10 @@ export class AiClueService implements OnModuleInit {
    * written natively and strictly in the requested UI language ('uk' | 'en' | 'ru').
    *
    * Execution order:
-   *  1. Groq (`llama-3.3-70b-versatile`)
+   *  1. Groq (configured model, auto-falling back to live Groq chat models on 404 model_not_found)
    *  2. Google Gemini (`gemini-2.5-flash`)
    *  3. Emergency Redis cache (`ai_clues:<animeId>:<lang>`, storing ONLY valid LLM outputs)
-   *  4. Offline deterministic dossier synthesis (using real plot sentences, characters, year, studio)
+   *  4. Offline deterministic dossier synthesis (`isFallback: true`)
    */
   async generateClues(
     anime: Anime,
@@ -95,7 +114,10 @@ export class AiClueService implements OnModuleInit {
       mainCharacterNames,
     );
 
-    // 1. Primary: Groq (llama-3.3-70b-versatile)
+    let groqErrMsg = '';
+    let geminiErrMsg = '';
+
+    // 1. Primary: Groq
     try {
       const groqClues = await this.callGroq(systemPrompt, userPrompt);
       const sanitized = this.validateAndSanitizeClueSet(
@@ -103,13 +125,18 @@ export class AiClueService implements OnModuleInit {
         forbiddenTitles,
         normalizedLang,
       );
-      await this.cacheBackupClues(anime.id, normalizedLang, sanitized);
-      return sanitized;
+      const result: GeneratedClueSet = {
+        ...sanitized,
+        isFallback: false,
+        provider: 'groq',
+      };
+      await this.cacheBackupClues(anime.id, normalizedLang, result);
+      return result;
     } catch (groqError) {
-      const msg =
+      groqErrMsg =
         groqError instanceof Error ? groqError.message : String(groqError);
       this.logger.error(
-        `[Groq FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${msg}. Falling back to Gemini...`,
+        `[Groq FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${groqErrMsg}. Falling back to Gemini...`,
       );
     }
 
@@ -121,15 +148,20 @@ export class AiClueService implements OnModuleInit {
         forbiddenTitles,
         normalizedLang,
       );
-      await this.cacheBackupClues(anime.id, normalizedLang, sanitized);
-      return sanitized;
+      const result: GeneratedClueSet = {
+        ...sanitized,
+        isFallback: false,
+        provider: 'gemini',
+      };
+      await this.cacheBackupClues(anime.id, normalizedLang, result);
+      return result;
     } catch (geminiError) {
-      const msg =
+      geminiErrMsg =
         geminiError instanceof Error
           ? geminiError.message
           : String(geminiError);
       this.logger.error(
-        `[Gemini FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${msg}. Checking Redis emergency LLM backup...`,
+        `[Gemini FAILED] animeId=${anime.id} (${anime.titleRomaji ?? anime.titleEn ?? 'Unknown'}, lang=${normalizedLang}): ${geminiErrMsg}. Checking Redis emergency LLM backup...`,
       );
     }
 
@@ -139,19 +171,28 @@ export class AiClueService implements OnModuleInit {
       this.logger.warn(
         `Served emergency cached LLM clue set from Redis (${this.buildRedisCacheKey(anime.id, normalizedLang)})`,
       );
-      return cached;
+      return {
+        ...cached,
+        isFallback: false,
+        provider: 'redis-backup',
+      };
     }
 
-    // 4. Offline deterministic dossier fallback (NOT cached to Redis so live LLM takes over immediately once online)
+    // 4. Offline deterministic dossier fallback (flagged isFallback: true, NOT cached to Redis)
     this.logger.error(
-      `[AI OFFLINE FALLBACK] Both Groq and Gemini failed with no Redis LLM cache for animeId=${anime.id} (${normalizedLang}). Synthesizing clues from dossier plot/characters.`,
+      `[AI FALLBACK ACTIVE] Both Groq and Gemini failed for animeId=${anime.id} (${normalizedLang}). ` +
+        `GroqError="${groqErrMsg}" | GeminiError="${geminiErrMsg}"`,
     );
-    return this.synthesizeFallbackFromDossier(
-      anime,
-      dossier,
-      normalizedLang,
-      forbiddenTitles,
-    );
+    return {
+      ...this.synthesizeFallbackFromDossier(
+        anime,
+        dossier,
+        normalizedLang,
+        forbiddenTitles,
+      ),
+      isFallback: true,
+      provider: 'fallback',
+    };
   }
 
   /**
@@ -177,57 +218,86 @@ export class AiClueService implements OnModuleInit {
       );
     }
 
-    const model =
+    const configuredModel =
       this.configService.get<string>('GROQ_MODEL')?.trim() ||
       'llama-3.3-70b-versatile';
-
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      AiClueService.REQUEST_TIMEOUT_MS,
+    const candidateModels = Array.from(
+      new Set([configuredModel, ...AiClueService.GROQ_FALLBACK_MODELS]),
     );
 
-    try {
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0.9,
-            response_format: { type: 'json_object' },
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-          }),
-          signal: controller.signal,
-        },
+    let lastError = new Error('Groq call failed');
+
+    for (const model of candidateModels) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        AiClueService.REQUEST_TIMEOUT_MS,
       );
 
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => '');
-        throw new Error(
-          `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
+      try {
+        const response = await fetch(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              temperature: 0.9,
+              response_format: { type: 'json_object' },
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+            }),
+            signal: controller.signal,
+          },
         );
-      }
 
-      const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const rawContent = data.choices?.[0]?.message?.content;
-      if (!rawContent) {
-        throw new Error(`Groq returned empty message content (model=${model})`);
-      }
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          lastError = new Error(
+            `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 400)}`,
+          );
 
-      return JSON.parse(rawContent);
-    } finally {
-      clearTimeout(timeout);
+          // Automatically try the next live Groq model if the configured model was deprecated/not found
+          if (
+            response.status === 404 ||
+            errBody.includes('model_not_found') ||
+            errBody.includes('model_decommissioned')
+          ) {
+            this.logger.warn(
+              `Groq model "${model}" unavailable (HTTP ${response.status}); trying next Groq model...`,
+            );
+            continue;
+          }
+
+          throw lastError;
+        }
+
+        const data = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const rawContent = data.choices?.[0]?.message?.content;
+        if (!rawContent) {
+          throw new Error(`Groq returned empty message content (model=${model})`);
+        }
+
+        if (model !== configuredModel) {
+          this.logger.log(
+            `Groq clue generation succeeded using fallback model="${model}"`,
+          );
+        }
+
+        return this.parseJsonObject(rawContent, `Groq(${model})`);
+      } finally {
+        clearTimeout(timeout);
+      }
     }
+
+    throw lastError;
   }
 
   private async callGemini(
@@ -298,9 +368,25 @@ export class AiClueService implements OnModuleInit {
         );
       }
 
-      return JSON.parse(rawText);
+      return this.parseJsonObject(rawText, `Gemini(${model})`);
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private parseJsonObject(rawText: string, providerLabel: string): unknown {
+    const cleaned = rawText
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `${providerLabel} returned invalid JSON (${msg}): ${cleaned.slice(0, 200)}`,
+      );
     }
   }
 
@@ -309,10 +395,10 @@ export class AiClueService implements OnModuleInit {
     forbiddenTitles: string[],
     mainCharacterNames: string[],
   ): string {
-    const languageSpecs: Record<SupportedLanguage, string> = {
-      uk: 'Ukrainian (Українська мова) — STRICTLY natural Ukrainian Cyrillic text. NEVER output raw English sentences, genre lists, or English AniList tag names.',
-      en: 'English — STRICTLY natural English prose. NEVER output raw comma-separated genre/tag lists.',
-      ru: 'Russian (Русский язык) — STRICTLY natural Russian Cyrillic text. NEVER output raw English sentences, genre lists, or English AniList tag names.',
+    const targetLanguageNames: Record<SupportedLanguage, string> = {
+      uk: 'Ukrainian (Українська мова)',
+      en: 'English',
+      ru: 'Russian (Русский язык)',
     };
 
     const mainCharsBlock =
@@ -323,8 +409,9 @@ export class AiClueService implements OnModuleInit {
     return [
       `You are an expert anime trivia game master creating 6 progressive deduction clues for a mystery anime.`,
       ``,
-      `MANDATORY TARGET LANGUAGE:`,
-      `Write ALL 6 clues natively and strictly in ${languageSpecs[lang]}`,
+      `MANDATORY TRANSLATION & TARGET LANGUAGE RULE (targetLang="${lang}"):`,
+      `The source dossier below is in English, but you MUST translate and rewrite ALL 6 clues completely into natural, idiomatic ${targetLanguageNames[lang]} matching targetLang="${lang}".`,
+      `NEVER copy-paste raw English sentences from the dossier when targetLang is 'uk' or 'ru'. Every single clue must read like it was written natively in ${targetLanguageNames[lang]}.`,
       ``,
       `OUTPUT FORMAT: Return STRICT JSON ONLY matching this exact schema:`,
       `{"hard": ["clue 1", "clue 2"], "medium": ["clue 3", "clue 4"], "easy": ["clue 5", "clue 6"]}`,
@@ -388,7 +475,8 @@ export class AiClueService implements OnModuleInit {
       .join('\n');
 
     return [
-      `Generate 6 completely distinct progressive clues strictly in ${languageLabel[lang]} for this mystery anime:`,
+      `Target Language (targetLang): ${languageLabel[lang]}`,
+      `Remember: Translate and rewrite EVERY clue natively into ${languageLabel[lang]}. Do NOT leave English sentences untranslated.`,
       `Romaji Title (DO NOT MENTION): ${anime.titleRomaji ?? 'N/A'}`,
       `English Title (DO NOT MENTION): ${anime.titleEn ?? 'N/A'}`,
       `Ukrainian Title (DO NOT MENTION): ${anime.titleUk ?? 'N/A'}`,
@@ -397,10 +485,10 @@ export class AiClueService implements OnModuleInit {
       `Animation Studios: ${studios.length > 0 ? studios.join(', ') : 'Unknown'}`,
       `Format: ${anime.type ?? 'TV'}`,
       `Main Characters (FORBIDDEN in Clues 1–4; use in Clues 5–6): ${mainCharacterNames.join(', ') || 'See Characters list below'}`,
-      `AniList Plot Description:\n${cleanedDescription || 'N/A'}`,
-      `Wikipedia Plot Summary:\n${cleanedWikiPlot || 'N/A'}`,
-      `Characters:\n${charactersText || 'N/A'}`,
-      `Fandom Wiki Trivia & Memes:\n${triviaText || 'N/A'}`,
+      `English Source — AniList Plot Description:\n${cleanedDescription || 'N/A'}`,
+      `English Source — Wikipedia Plot Summary:\n${cleanedWikiPlot || 'N/A'}`,
+      `English Source — Characters:\n${charactersText || 'N/A'}`,
+      `English Source — Fandom Wiki Trivia & Memes:\n${triviaText || 'N/A'}`,
     ].join('\n\n');
   }
 
@@ -505,12 +593,19 @@ export class AiClueService implements OnModuleInit {
       throw new Error(`Empty clue string in "${tier}" tier`);
     }
 
-    // Ensure Ukrainian and Russian responses actually use Cyrillic script instead of English fallback
+    // Ensure Ukrainian and Russian responses use Cyrillic script and do not leak raw English sentences
     if (lang === 'uk' || lang === 'ru') {
-      if (!CYRILLIC_RE.test(first) || !CYRILLIC_RE.test(second)) {
-        throw new Error(
-          `AI returned non-Cyrillic text for target language "${lang}" in "${tier}" tier`,
-        );
+      for (const clue of [first, second]) {
+        if (!CYRILLIC_RE.test(clue)) {
+          throw new Error(
+            `AI returned non-Cyrillic text for target language "${lang}" in "${tier}" tier`,
+          );
+        }
+        if (LEAKED_ENGLISH_SENTENCE_RE.test(clue)) {
+          throw new Error(
+            `AI leaked untranslated English sentence for target language "${lang}" in "${tier}" tier`,
+          );
+        }
       }
     }
 
@@ -603,7 +698,11 @@ export class AiClueService implements OnModuleInit {
         .getClient()
         .set(
           key,
-          JSON.stringify(clueSet),
+          JSON.stringify({
+            hard: clueSet.hard,
+            medium: clueSet.medium,
+            easy: clueSet.easy,
+          }),
           'EX',
           AiClueService.REDIS_CACHE_TTL_SECONDS,
         );
@@ -695,7 +794,6 @@ export class AiClueService implements OnModuleInit {
     const scrubNoMain = (s: string) =>
       this.scrubMainNames(scrubAll(s), mainChars);
 
-    // Distinct facts allocated strictly across steps 1..6 (zero overlap)
     const plot1 = plotSentences[0] ?? '';
     const plot2 = plotSentences[1] ?? '';
     const plot3 = plotSentences[2] ?? '';

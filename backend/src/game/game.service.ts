@@ -53,6 +53,7 @@ export interface RevealedAnimeAnswer {
 export interface RedisSoloGameState {
   targetAnimeId: string;
   lang: SupportedLanguage;
+  isFallback?: boolean;
   clues: GameClueItem[];
   unlockedStep: number;
   guesses: GameGuessEntry[];
@@ -64,6 +65,7 @@ export interface RedisSoloGameState {
 export interface SoloGameResponse {
   status: RoundStatus;
   lang: SupportedLanguage;
+  isFallback?: boolean;
   unlockedStep: number;
   maxSteps: number;
   unlockedClues: GameClueItem[];
@@ -78,6 +80,7 @@ interface BufferedRoundPayload {
   targetAnimeId: string;
   lang: SupportedLanguage;
   poolLimit: number | null;
+  isFallback?: boolean;
   clues: GameClueItem[];
 }
 
@@ -130,6 +133,7 @@ export class GameService {
 
     let targetAnimeId: string;
     let clues: GameClueItem[];
+    let isFallback = false;
 
     const buffered = await this.popBufferedRound(
       userId,
@@ -140,6 +144,7 @@ export class GameService {
     if (buffered) {
       targetAnimeId = buffered.targetAnimeId;
       clues = buffered.clues;
+      isFallback = buffered.isFallback === true;
     } else {
       const randomAnime = await this.animeService.getRandomAnime(
         prevRecentIds,
@@ -154,6 +159,7 @@ export class GameService {
       );
       targetAnimeId = String(enrichedAnime.id);
       clues = this.formatClueItems(generated);
+      isFallback = generated.isFallback === true;
     }
 
     const updatedRecentIds = [
@@ -164,6 +170,7 @@ export class GameService {
     const newState: RedisSoloGameState = {
       targetAnimeId,
       lang,
+      isFallback,
       clues,
       unlockedStep: 1,
       guesses: [],
@@ -185,6 +192,7 @@ export class GameService {
     return {
       status: 'IN_PROGRESS',
       lang,
+      isFallback,
       unlockedStep: 1,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: newState.clues.slice(0, 1),
@@ -267,6 +275,7 @@ export class GameService {
       return {
         status: 'WON',
         lang: state.lang,
+        isFallback: state.isFallback === true,
         unlockedStep: state.unlockedStep,
         maxSteps: GameService.MAX_STEPS,
         unlockedClues: state.clues.slice(0, state.unlockedStep),
@@ -291,6 +300,7 @@ export class GameService {
       return {
         status: 'IN_PROGRESS',
         lang: state.lang,
+        isFallback: state.isFallback === true,
         unlockedStep: state.unlockedStep,
         maxSteps: GameService.MAX_STEPS,
         unlockedClues: state.clues.slice(0, state.unlockedStep),
@@ -317,6 +327,7 @@ export class GameService {
     return {
       status: 'LOST',
       lang: state.lang,
+      isFallback: state.isFallback === true,
       unlockedStep: state.unlockedStep,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: state.clues,
@@ -360,6 +371,7 @@ export class GameService {
     return {
       status: 'LOST',
       lang: state.lang,
+      isFallback: state.isFallback === true,
       unlockedStep: state.unlockedStep,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: state.clues,
@@ -479,6 +491,7 @@ export class GameService {
         targetAnimeId: String(enrichedAnime.id),
         lang,
         poolLimit,
+        isFallback: generated.isFallback === true,
         clues: this.formatClueItems(generated),
       };
       await this.redisService
