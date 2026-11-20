@@ -1,37 +1,56 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Anime } from '@prisma/client';
+import { Anime, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SearchAnimeDto } from './dto/search-anime.dto';
 
 export interface AnimeSearchResult {
   id: number;
-  anilistId: number;
+  anilistId: number | null;
   titleEn: string | null;
-  titleRomaji: string;
+  titleRomaji: string | null;
   titleJa: string | null;
   titleUk: string | null;
   titleRu: string | null;
   synonyms: string[];
-  coverUrl: string;
+  coverUrl: string | null;
+  type?: string | null;
+  year?: number | null;
 }
 
 @Injectable()
 export class AnimeService {
+  private readonly logger = new Logger(AnimeService.name);
+  private static readonly DEFAULT_SEARCH_LIMIT = 15;
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Performs fast case-insensitive substring (ILIKE '%q%') + trigram similarity (pg_trgm)
-   * matching across titleEn, titleRomaji, titleUk, titleRu, titleJa, and synonyms.
-   * Prefix and substring matches are ranked above fuzzy trigram matches so typing
-   * e.g. "guil" immediately ranks "Guilty Crown" at the top.
+   * Convenience wrapper accepting a raw query string (defaults to top 15 results).
+   */
+  async search(
+    query: string,
+    limit: number = AnimeService.DEFAULT_SEARCH_LIMIT,
+  ): Promise<AnimeSearchResult[]> {
+    return this.searchMultilingual({ q: query, limit });
+  }
+
+  /**
+   * Performs fast, NULL-safe multilingual autocomplete across the 15,000+ anime catalog.
+   * Combines case-insensitive substring matching (`ILIKE '%query%'`) with PostgreSQL
+   * `pg_trgm` trigram similarity (`SIMILARITY(...) > 0.15`) across all localized title
+   * columns and `synonyms` (`array_to_string(synonyms, ' ')`), ranking:
+   *   1) Exact prefix matches (`ILIKE 'query%'`) first
+   *   2) Substring matches (`ILIKE '%query%'`, including synonyms) second
+   *   3) Highest trigram similarity third
    */
   async searchMultilingual(dto: SearchAnimeDto): Promise<AnimeSearchResult[]> {
     const query = (dto.q ?? '').trim();
-    const limit = dto.limit ?? 10;
+    const limit = dto.limit ?? AnimeService.DEFAULT_SEARCH_LIMIT;
 
     if (query.length < 2) {
       return [];
@@ -51,62 +70,57 @@ export class AnimeService {
           a."titleUk",
           a."titleRu",
           a."synonyms",
-          a."coverUrl"
+          a."coverUrl",
+          a."type",
+          a."year"
         FROM "Anime" a
         WHERE
-          a."titleRomaji" ILIKE ${substringPattern}
-          OR COALESCE(a."titleEn", '') ILIKE ${substringPattern}
+          COALESCE(a."titleEn", '') ILIKE ${substringPattern}
+          OR COALESCE(a."titleRomaji", '') ILIKE ${substringPattern}
           OR COALESCE(a."titleUk", '') ILIKE ${substringPattern}
           OR COALESCE(a."titleRu", '') ILIKE ${substringPattern}
           OR COALESCE(a."titleJa", '') ILIKE ${substringPattern}
-          OR EXISTS (
-            SELECT 1 FROM unnest(a."synonyms") AS syn
-            WHERE syn ILIKE ${substringPattern} OR SIMILARITY(syn, ${query}) > 0.25
-          )
-          OR SIMILARITY(a."titleRomaji", ${query}) > 0.2
-          OR SIMILARITY(COALESCE(a."titleEn", ''), ${query}) > 0.2
-          OR SIMILARITY(COALESCE(a."titleUk", ''), ${query}) > 0.2
-          OR SIMILARITY(COALESCE(a."titleRu", ''), ${query}) > 0.2
-          OR WORD_SIMILARITY(${query}, a."titleRomaji") > 0.35
-          OR WORD_SIMILARITY(${query}, COALESCE(a."titleEn", '')) > 0.35
-          OR WORD_SIMILARITY(${query}, COALESCE(a."titleUk", '')) > 0.35
-          OR WORD_SIMILARITY(${query}, COALESCE(a."titleRu", '')) > 0.35
+          OR COALESCE(array_to_string(a."synonyms", ' '), '') ILIKE ${substringPattern}
+          OR SIMILARITY(COALESCE(a."titleEn", ''), ${query}) > 0.15
+          OR SIMILARITY(COALESCE(a."titleRomaji", ''), ${query}) > 0.15
+          OR SIMILARITY(COALESCE(a."titleUk", ''), ${query}) > 0.15
+          OR SIMILARITY(COALESCE(a."titleRu", ''), ${query}) > 0.15
+          OR SIMILARITY(COALESCE(a."titleJa", ''), ${query}) > 0.15
+          OR SIMILARITY(COALESCE(array_to_string(a."synonyms", ' '), ''), ${query}) > 0.15
         ORDER BY
-          (
-            CASE
-              WHEN COALESCE(a."titleEn", '') ILIKE ${prefixPattern}
-                OR a."titleRomaji" ILIKE ${prefixPattern}
-                OR COALESCE(a."titleUk", '') ILIKE ${prefixPattern}
-                OR COALESCE(a."titleRu", '') ILIKE ${prefixPattern}
-                OR COALESCE(a."titleJa", '') ILIKE ${prefixPattern}
-              THEN 2.0
-              WHEN COALESCE(a."titleEn", '') ILIKE ${substringPattern}
-                OR a."titleRomaji" ILIKE ${substringPattern}
-                OR COALESCE(a."titleUk", '') ILIKE ${substringPattern}
-                OR COALESCE(a."titleRu", '') ILIKE ${substringPattern}
-                OR COALESCE(a."titleJa", '') ILIKE ${substringPattern}
-                OR EXISTS (
-                  SELECT 1 FROM unnest(a."synonyms") AS syn
-                  WHERE syn ILIKE ${substringPattern}
-                )
-              THEN 1.0
-              ELSE 0.0
-            END
-          ) + GREATEST(
-            SIMILARITY(a."titleRomaji", ${query}),
+          CASE
+            WHEN COALESCE(a."titleEn", '') ILIKE ${prefixPattern}
+              OR COALESCE(a."titleRomaji", '') ILIKE ${prefixPattern}
+              OR COALESCE(a."titleUk", '') ILIKE ${prefixPattern}
+              OR COALESCE(a."titleRu", '') ILIKE ${prefixPattern}
+              OR COALESCE(a."titleJa", '') ILIKE ${prefixPattern}
+            THEN 2
+            WHEN COALESCE(a."titleEn", '') ILIKE ${substringPattern}
+              OR COALESCE(a."titleRomaji", '') ILIKE ${substringPattern}
+              OR COALESCE(a."titleUk", '') ILIKE ${substringPattern}
+              OR COALESCE(a."titleRu", '') ILIKE ${substringPattern}
+              OR COALESCE(a."titleJa", '') ILIKE ${substringPattern}
+              OR COALESCE(array_to_string(a."synonyms", ' '), '') ILIKE ${substringPattern}
+            THEN 1
+            ELSE 0
+          END DESC,
+          GREATEST(
             SIMILARITY(COALESCE(a."titleEn", ''), ${query}),
+            SIMILARITY(COALESCE(a."titleRomaji", ''), ${query}),
             SIMILARITY(COALESCE(a."titleUk", ''), ${query}),
             SIMILARITY(COALESCE(a."titleRu", ''), ${query}),
-            WORD_SIMILARITY(${query}, a."titleRomaji"),
-            WORD_SIMILARITY(${query}, COALESCE(a."titleEn", '')),
-            WORD_SIMILARITY(${query}, COALESCE(a."titleUk", '')),
-            WORD_SIMILARITY(${query}, COALESCE(a."titleRu", ''))
+            SIMILARITY(COALESCE(a."titleJa", ''), ${query}),
+            SIMILARITY(COALESCE(array_to_string(a."synonyms", ' '), ''), ${query})
           ) DESC,
           a."id" ASC
         LIMIT ${limit};
       `;
       return results;
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Raw pg_trgm search failed for query="${query}", falling back to Prisma ILIKE: ${msg}`,
+      );
       return this.prisma.anime.findMany({
         where: {
           OR: [
@@ -128,6 +142,8 @@ export class AnimeService {
           titleRu: true,
           synonyms: true,
           coverUrl: true,
+          type: true,
+          year: true,
         },
         take: limit,
       });
@@ -135,8 +151,8 @@ export class AnimeService {
   }
 
   /**
-   * Selects a completely random anime from the database excluding only the
-   * recently played IDs passed in excludeIds (no rigid popularity tier restrictions).
+   * Selects a random anime across the full catalog requiring non-null `coverUrl`
+   * and `anilistId`, excluding recently played IDs passed in `excludeIds`.
    */
   async getRandomAnime(excludeIds: Array<string | number> = []): Promise<Anime> {
     const parsedExcludeIds = excludeIds
@@ -145,21 +161,34 @@ export class AnimeService {
       )
       .filter((id) => Number.isInteger(id) && id > 0);
 
-    const whereClause =
-      parsedExcludeIds.length > 0 ? { id: { notIn: parsedExcludeIds } } : {};
+    const baseEligibleWhere: Prisma.AnimeWhereInput = {
+      coverUrl: { not: null },
+      NOT: { coverUrl: '' },
+      anilistId: { not: null },
+    };
+
+    const whereClause: Prisma.AnimeWhereInput =
+      parsedExcludeIds.length > 0
+        ? {
+            ...baseEligibleWhere,
+            id: { notIn: parsedExcludeIds },
+          }
+        : baseEligibleWhere;
 
     let eligibleCount = await this.prisma.anime.count({ where: whereClause });
-    let activeWhere: { id?: { notIn: number[] } } = whereClause;
+    let activeWhere: Prisma.AnimeWhereInput = whereClause;
 
-    // Fallback to all anime if every entry in the DB was excluded
+    // Fallback to all eligible catalog records if every eligible entry was excluded
     if (eligibleCount === 0) {
-      eligibleCount = await this.prisma.anime.count();
-      activeWhere = {};
+      eligibleCount = await this.prisma.anime.count({
+        where: baseEligibleWhere,
+      });
+      activeWhere = baseEligibleWhere;
     }
 
     if (eligibleCount === 0) {
       throw new BadRequestException(
-        'No anime entries available in database. Seed the database first.',
+        'No eligible anime entries available in database. Import the catalog first.',
       );
     }
 
@@ -186,6 +215,8 @@ export class AnimeService {
         titleRu: true,
         synonyms: true,
         coverUrl: true,
+        type: true,
+        year: true,
       },
     });
     if (!anime) {

@@ -266,19 +266,33 @@ Verifies the 6-digit password reset OTP (`otp:reset:<email>`), hashes `newPasswo
 
 ---
 
-## 5. Multilingual Anime Search & Random Selection (`AnimeModule`)
+## 5. Full Catalog, Lazy Enrichment & Multilingual Search (`AnimeModule`)
 
-### `GET /api/anime/search?q=<query>&limit=10`
+### Full Catalog Importer (`scripts/import_full_catalog.py`)
 
-Performs fast case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_trgm` trigram similarity (`SIMILARITY` & `WORD_SIMILARITY`) matching across `titleEn`, `titleRomaji`, `titleUk`, `titleRu`, `titleJa`, and `synonyms`.
+Run `npm run catalog:import` inside `backend/` (wraps `python3 ../scripts/import_full_catalog.py`) to download `anime-offline-database-minified.json`, filter valid formats (`TV`, `MOVIE`, `OVA`, `ONA`, `SPECIAL`) excluding adult tags (`hentai`, `erotica`) and `MUSIC`, batch-enrich `uk` / `ru` / `en` labels from Wikidata SPARQL (`wdt:P4086` / `wdt:P8729`), and bulk-upsert 15,000+ records into PostgreSQL via `psycopg2.extras.execute_values` while preserving existing enriched dossiers.
+
+### Lazy On-Demand Enrichment (`AnimeEnrichmentService.ensureEnriched`)
+
+Called automatically in `GameService.startSoloRound()` and background round pre-warming before clue generation:
+- Returns immediately if `anime.isEnriched === true` and `anime.dossier` is populated.
+- Otherwise fetches in parallel with a strict **4-second timeout** per external source:
+  1. **AniList GraphQL API** (by `anilistId` or title): `title.english`, `title.native`, `description`, `genres`, top `tags`, and main/supporting `characters`.
+  2. **Wikipedia API**: plot summary and fallback `uk`/`ru` interlanguage titles.
+  3. **Fandom MediaWiki API**: `Trivia`, memes, quotes, and character quirks.
+- Saves `dossier`, `titleEn`, `titleJa`, and `isEnriched: true` back to PostgreSQL for instant reuse on subsequent games.
+
+### `GET /api/anime/search?q=<query>&limit=15`
+
+Performs NULL-safe case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_trgm` trigram similarity (`SIMILARITY(...) > 0.15`) matching across `COALESCE(titleEn, '')`, `COALESCE(titleRomaji, '')`, `COALESCE(titleUk, '')`, `COALESCE(titleRu, '')`, `COALESCE(titleJa, '')`, and `array_to_string(synonyms, ' ')`.
 
 - **Query Parameters (`SearchAnimeDto`):**
   - `q`: Search query string (trimmed, **minimum 2 characters**).
-  - `limit`: Optional maximum results (default `10`, range `1–20`).
+  - `limit`: Optional maximum results (default `15`, range `1–25`).
 - **Ranking Priority:**
-  1. Direct prefix matches (`ILIKE 'q%'`) on any localized title (`+2.0` score boost) — e.g. typing `"guil"` immediately ranks `"Guilty Crown"` at `#1`.
-  2. Direct substring matches (`ILIKE '%q%'`) on any localized title or `synonyms` (`+1.0` score boost).
-  3. Highest `SIMILARITY()` / `WORD_SIMILARITY()` across `titleRomaji`, `titleEn`, `titleUk`, `titleRu`, and `synonyms`.
+  1. Exact prefix matches (`ILIKE 'q%'`) on any localized title first.
+  2. Substring matches (`ILIKE '%q%'`) on any localized title or `synonyms` second.
+  3. Highest trigram `SIMILARITY()` across localized titles and `synonyms` third.
 - **Response (`200 OK` — `AnimeSearchResult[]`):**
   ```json
   [
@@ -291,14 +305,16 @@ Performs fast case-insensitive substring (`ILIKE '%q%'`) + PostgreSQL `pg_trgm` 
       "titleUk": "Корона грішника",
       "titleRu": "Корона грешника",
       "synonyms": ["GC", "Корона провини"],
-      "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx10793-f576138c.jpg"
+      "coverUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx10793-f576138c.jpg",
+      "type": "TV",
+      "year": 2011
     }
   ]
   ```
 
 ### `AnimeService.getRandomAnime(excludeIds: string[])`
 
-Selects a completely random `Anime` record from PostgreSQL excluding only the recently played IDs passed in `excludeIds` (no rigid popularity tier restrictions). Falls back to the full catalog if all existing anime IDs are in `excludeIds`.
+Selects a random `Anime` record across the full catalog requiring non-null `coverUrl` and `anilistId`, excluding the recently played IDs passed in `excludeIds` (last `30` played IDs tracked per user in Redis `game:solo:<userId>`). Falls back to all eligible catalog records if every eligible ID is in `excludeIds`.
 
 ---
 
@@ -306,23 +322,25 @@ Selects a completely random `Anime` record from PostgreSQL excluding only the re
 
 ### `AiClueService.generateClues(anime: Anime, lang: 'uk' | 'en' | 'ru')`
 
-Generates **6 fresh progressive clues on the fly** (`temperature: 0.9`) from the anime's 3-source `dossier` (AniList synopsis/characters/tags + Wikipedia plot summary + Fandom Wiki trivia/memes), written natively in the user's selected UI language (`uk`, `en`, or `ru`).
+Generates **6 completely distinct progressive clues on the fly** (`temperature: 0.9`) from the anime's enriched `dossier` (AniList + Wikipedia + Fandom), strictly and natively in the user's selected UI language (`uk`, `en`, or `ru`) with zero English fallback for `uk`/`ru`.
 
 - **Strict JSON Output Schema (`GeneratedClueSet`):**
   ```json
   {
-    "hard": ["Deep lore, Fandom trivia/meme, or worldbuilding mechanic clue 1", "Hard clue 2"],
-    "medium": ["Faction, secondary character, or signature power clue 3", "Medium clue 4"],
-    "easy": ["Main character names, catchphrases, or iconic plot hook clue 5", "Easy clue 6"]
+    "hard": ["Obscure Fandom trivia, background meme, world rule, or side-character quirk 1", "Hard clue 2"],
+    "medium": ["Core plot premise, central conflict, or ironic problem-solving summary 3", "Medium clue 4"],
+    "easy": ["Iconic plot twist, signature power/item, famous meme, or major character name/catchphrase 5", "Easy clue 6"]
   }
   ```
-- **Prompt Rules:**
-  - Character names, factions, world terms, specific abilities, and Fandom memes/trivia **ARE ALLOWED and encouraged**.
-  - Only the exact title of the anime itself (across all languages/synonyms) is strictly forbidden and scrubbed (`[***]`).
-- **Resilience & Multi-Tier Fallback:**
+- **Strict Tier & No-Repeat Rules:**
+  - **HARD (Clues 1 & 2):** Obscure Fandom trivia, background memes, specific world rules, or minor side-character quirks. **No main character names and no anime title.**
+  - **MEDIUM (Clues 3 & 4):** Core plot premise, central conflict, or ironic summary of how the protagonist solves problems. **No main character names (refer by role/traits) and no repetition of Hard clues.**
+  - **EASY (Clues 5 & 6):** Iconic plot twists, signature powers/items, famous memes, or major character names/catchphrases — without stating the anime title and without repeating or paraphrasing Clues 1–4.
+  - All 6 clues must describe 6 completely distinct facts/aspects.
+- **Resilience & Language-Scoped Caching:**
   1. **Primary LLM:** Groq (`llama-3.3-70b-versatile`) via `GROQ_API_KEY`.
-  2. **Fallback LLM:** Google Gemini (`gemini-2.5-flash`) via `GEMINI_API_KEY` on rate-limit (`429`) or network errors.
-  3. **Emergency Redis Cache:** Last valid generated clue set per `(animeId, lang)` is cached in Redis (`ai_clues:backup:<animeId>:<lang>`, 30d TTL) and served if both LLM providers are unreachable, with deterministic dossier synthesis as final fallback.
+  2. **Fallback LLM:** Google Gemini (`gemini-2.5-flash`) via `GEMINI_API_KEY` on rate-limit (`429`), language validation failure, or network error.
+  3. **Language-Scoped Redis Backup Cache:** Cached under `ai_clues:<animeId>:<lang>` (30d TTL) and served if both LLM providers are unreachable, with deterministic localized dossier synthesis as final fallback.
 
 ---
 
@@ -330,15 +348,16 @@ Generates **6 fresh progressive clues on the fly** (`temperature: 0.9`) from the
 
 All solo game endpoints are protected by `JwtAuthGuard` (`HttpOnly` `access_token` cookie). Active round state is stored per user in Redis under `game:solo:<userId>` with a 2-hour TTL (`7200s`), tracking:
 - `targetAnimeId`: string (strictly server-side while `status === 'IN_PROGRESS'`)
+- `lang`: `'uk' | 'en' | 'ru'` (synced from `POST /api/game/start` payload)
 - `clues`: 6 progressive clue objects (`step: 1..6`, `difficulty: 'HARD' | 'MEDIUM' | 'EASY'`, `text: string`)
 - `unlockedStep`: `1..6`
 - `guesses`: `{ animeId: string, title: string, isCorrect: boolean }[]`
-- `recentAnimeIds`: last 15 played anime IDs to prevent immediate repeats
+- `recentAnimeIds`: last `30` played anime IDs to prevent repeats
 - `status`: `'IN_PROGRESS' | 'WON' | 'LOST'`
 
 ### `POST /api/game/start`
 
-Selects a random anime via `AnimeService.getRandomAnime(recentAnimeIds)` (using a background pre-warmed Redis buffer `game:solo:next:<userId>:<lang>` when available), generates 6 fresh clues via `AiClueService` in the requested language, saves session state in Redis with `unlockedStep = 1`, and returns **only Clue #1** alongside current user stats.
+Selects a random eligible anime via `AnimeService.getRandomAnime(recentAnimeIds)` (using a language-scoped pre-warmed buffer `game:solo:next:<userId>:<lang>` when available), runs `AnimeEnrichmentService.ensureEnriched(anime.id)`, generates 6 fresh clues via `AiClueService` in the requested language, saves session state in Redis with `unlockedStep = 1`, and returns **only Clue #1** alongside `lang` and current user stats.
 
 - **Request Body (`StartGameDto`):**
   ```json
@@ -350,13 +369,14 @@ Selects a random anime via `AnimeService.getRandomAnime(recentAnimeIds)` (using 
   ```json
   {
     "status": "IN_PROGRESS",
+    "lang": "uk",
     "unlockedStep": 1,
     "maxSteps": 6,
     "unlockedClues": [
       {
         "step": 1,
         "difficulty": "HARD",
-        "text": "Вигаданий гурт із цього аніме став реальним музичним колективом..."
+        "text": "Вигаданий гурт із цього всесвіту став реальним музичним колективом..."
       }
     ],
     "guesses": [],
