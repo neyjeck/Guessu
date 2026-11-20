@@ -47,7 +47,8 @@ export class AiClueService implements OnModuleInit {
   private readonly logger = new Logger(AiClueService.name);
   private static readonly REDIS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
   private static readonly REQUEST_TIMEOUT_MS = 18_000;
-  private static readonly MAX_COMPLETION_TOKENS = 900;
+  private static readonly MAX_COMPLETION_TOKENS = 1400;
+  private static readonly GEMINI_503_RETRY_DELAY_MS = 1_000;
   private static readonly GROQ_FALLBACK_MODELS = [
     'openai/gpt-oss-120b',
     'qwen/qwen3.8-27b',
@@ -126,11 +127,11 @@ export class AiClueService implements OnModuleInit {
     let groqErrMsg = '';
     let geminiErrMsg = '';
 
-    // 1. Primary: Groq
+    // 1. Primary: Groq (automatically fails over across live Groq models on 404/429/malformed JSON)
     try {
-      const groqClues = await this.callGroq(systemPrompt, userPrompt);
-      const sanitized = this.validateAndSanitizeClueSet(
-        groqClues,
+      const sanitized = await this.callGroq(
+        systemPrompt,
+        userPrompt,
         forbiddenTitles,
         normalizedLang,
       );
@@ -149,11 +150,11 @@ export class AiClueService implements OnModuleInit {
       console.error(errLine);
     }
 
-    // 2. Fallback: Google Gemini (gemini-2.5-flash)
+    // 2. Fallback: Google Gemini (with 1s retry on transient HTTP 503 UNAVAILABLE)
     try {
-      const geminiClues = await this.callGemini(systemPrompt, userPrompt);
-      const sanitized = this.validateAndSanitizeClueSet(
-        geminiClues,
+      const sanitized = await this.callGemini(
+        systemPrompt,
+        userPrompt,
         forbiddenTitles,
         normalizedLang,
       );
@@ -221,7 +222,9 @@ export class AiClueService implements OnModuleInit {
   private async callGroq(
     systemPrompt: string,
     userPrompt: string,
-  ): Promise<unknown> {
+    forbiddenTitles: string[],
+    lang: SupportedLanguage,
+  ): Promise<GeneratedClueSet> {
     const apiKey = this.configService.get<string>('GROQ_API_KEY')?.trim();
     if (!apiKey || apiKey.startsWith('gsk_your_')) {
       throw new Error(
@@ -280,10 +283,11 @@ export class AiClueService implements OnModuleInit {
             `Groq API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
           );
 
-          // Automatically fail over to the next Groq model on 404 (deprecated/not found) OR 429 (separate TPM quota bucket)
+          // Automatically fail over to the next Groq model on 404/429/503
           if (
             response.status === 404 ||
             response.status === 429 ||
+            response.status === 503 ||
             errBody.includes('model_not_found') ||
             errBody.includes('model_decommissioned') ||
             errBody.includes('rate_limit_exceeded')
@@ -302,16 +306,37 @@ export class AiClueService implements OnModuleInit {
         };
         const rawContent = data.choices?.[0]?.message?.content;
         if (!rawContent) {
-          throw new Error(`Groq returned empty message content (model=${model})`);
-        }
-
-        if (model !== configuredModel) {
-          this.logger.log(
-            `Groq clue generation succeeded using fallback model="${model}"`,
+          lastError = new Error(
+            `Groq returned empty message content (model=${model})`,
           );
+          this.logger.warn(`${lastError.message}; trying next Groq model...`);
+          continue;
         }
 
-        return this.parseJsonObject(rawContent, `Groq(${model})`);
+        try {
+          const parsed = this.parseJsonObject(rawContent, `Groq(${model})`);
+          const validated = this.validateAndSanitizeClueSet(
+            parsed,
+            forbiddenTitles,
+            lang,
+          );
+          if (model !== configuredModel) {
+            this.logger.log(
+              `Groq clue generation succeeded using fallback model="${model}"`,
+            );
+          }
+          return validated;
+        } catch (validationErr) {
+          const msg =
+            validationErr instanceof Error
+              ? validationErr.message
+              : String(validationErr);
+          lastError = new Error(`Groq(${model}): ${msg}`);
+          this.logger.warn(
+            `Groq model "${model}" returned invalid clue structure (${msg}); trying next Groq model...`,
+          );
+          continue;
+        }
       } finally {
         clearTimeout(timeout);
       }
@@ -323,7 +348,9 @@ export class AiClueService implements OnModuleInit {
   private async callGemini(
     systemPrompt: string,
     userPrompt: string,
-  ): Promise<unknown> {
+    forbiddenTitles: string[],
+    lang: SupportedLanguage,
+  ): Promise<GeneratedClueSet> {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY')?.trim();
     if (!apiKey || apiKey.startsWith('your_')) {
       throw new Error(
@@ -341,82 +368,106 @@ export class AiClueService implements OnModuleInit {
     let lastError = new Error('Gemini call failed');
 
     for (const model of candidateModels) {
-      const controller = new AbortController();
-      const timeout = setTimeout(
-        () => controller.abort(),
-        AiClueService.REQUEST_TIMEOUT_MS,
-      );
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () => controller.abort(),
+          AiClueService.REQUEST_TIMEOUT_MS,
+        );
 
-      try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-          model,
-        )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        try {
+          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+            model,
+          )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemPrompt }],
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
             },
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: userPrompt }],
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{ text: systemPrompt }],
               },
-            ],
-            generationConfig: {
-              temperature: 0.85,
-              maxOutputTokens: AiClueService.MAX_COMPLETION_TOKENS,
-              responseMimeType: 'application/json',
-            },
-          }),
-          signal: controller.signal,
-        });
+              contents: [
+                {
+                  role: 'user',
+                  parts: [{ text: userPrompt }],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.85,
+                maxOutputTokens: AiClueService.MAX_COMPLETION_TOKENS,
+                responseMimeType: 'application/json',
+              },
+            }),
+            signal: controller.signal,
+          });
 
-        if (!response.ok) {
-          const errBody = await response.text().catch(() => '');
-          lastError = new Error(
-            `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
-          );
-
-          if (response.status === 404 || response.status === 429) {
-            this.logger.warn(
-              `Gemini model "${model}" unavailable/rate-limited (HTTP ${response.status}); trying next Gemini model...`,
+          if (!response.ok) {
+            const errBody = await response.text().catch(() => '');
+            lastError = new Error(
+              `Gemini API HTTP ${response.status} (model=${model}): ${errBody.slice(0, 500)}`,
             );
-            continue;
+
+            if (response.status === 503 && attempt === 1) {
+              this.logger.warn(
+                `Gemini model "${model}" returned transient HTTP 503; retrying in ${AiClueService.GEMINI_503_RETRY_DELAY_MS}ms...`,
+              );
+              await this.delay(AiClueService.GEMINI_503_RETRY_DELAY_MS);
+              continue;
+            }
+
+            if (
+              response.status === 404 ||
+              response.status === 429 ||
+              response.status === 503
+            ) {
+              this.logger.warn(
+                `Gemini model "${model}" unavailable/rate-limited (HTTP ${response.status}); trying next Gemini model...`,
+              );
+              break;
+            }
+
+            throw lastError;
           }
 
-          throw lastError;
-        }
+          const data = (await response.json()) as {
+            candidates?: Array<{
+              content?: { parts?: Array<{ text?: string }> };
+            }>;
+          };
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!rawText) {
+            lastError = new Error(
+              `Gemini returned empty candidate content (model=${model})`,
+            );
+            break;
+          }
 
-        const data = (await response.json()) as {
-          candidates?: Array<{
-            content?: { parts?: Array<{ text?: string }> };
-          }>;
-        };
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawText) {
-          throw new Error(
-            `Gemini returned empty candidate content (model=${model})`,
+          const parsed = this.parseJsonObject(rawText, `Gemini(${model})`);
+          const validated = this.validateAndSanitizeClueSet(
+            parsed,
+            forbiddenTitles,
+            lang,
           );
+          if (model !== configuredModel) {
+            this.logger.log(
+              `Gemini clue generation succeeded using fallback model="${model}"`,
+            );
+          }
+          return validated;
+        } finally {
+          clearTimeout(timeout);
         }
-
-        if (model !== configuredModel) {
-          this.logger.log(
-            `Gemini clue generation succeeded using fallback model="${model}"`,
-          );
-        }
-
-        return this.parseJsonObject(rawText, `Gemini(${model})`);
-      } finally {
-        clearTimeout(timeout);
       }
     }
 
     throw lastError;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -567,6 +618,32 @@ export class AiClueService implements OnModuleInit {
     ).sort((a, b) => b.length - a.length);
   }
 
+  private extractClueString(entry: unknown): string {
+    if (typeof entry === 'string') return entry.trim();
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const rec = entry as Record<string, unknown>;
+      const candidate = rec.text ?? rec.clue ?? rec.content ?? rec.value;
+      if (typeof candidate === 'string') return candidate.trim();
+    }
+    return '';
+  }
+
+  private extractTierValues(
+    obj: Record<string, unknown>,
+    tierName: 'hard' | 'medium' | 'easy',
+  ): unknown[] | null {
+    const matchedKey = Object.keys(obj).find(
+      (k) => k.toLowerCase() === tierName,
+    );
+    if (!matchedKey) return null;
+    const val = obj[matchedKey];
+    if (Array.isArray(val)) return val;
+    if (val && typeof val === 'object') {
+      return Object.values(val as Record<string, unknown>);
+    }
+    return null;
+  }
+
   private validateAndSanitizeClueSet(
     raw: unknown,
     forbiddenTitles: string[],
@@ -576,15 +653,65 @@ export class AiClueService implements OnModuleInit {
       throw new Error('AI response is not a JSON object');
     }
 
-    const obj = raw as Record<string, unknown>;
-    const hard = this.normalizePair(obj.hard, 'hard', forbiddenTitles, lang);
+    let rawHard: unknown[] | null = null;
+    let rawMedium: unknown[] | null = null;
+    let rawEasy: unknown[] | null = null;
+
+    if (Array.isArray(raw) && raw.length >= 6) {
+      rawHard = raw.slice(0, 2);
+      rawMedium = raw.slice(2, 4);
+      rawEasy = raw.slice(4, 6);
+    } else {
+      const obj = raw as Record<string, unknown>;
+      rawHard = this.extractTierValues(obj, 'hard');
+      rawMedium = this.extractTierValues(obj, 'medium');
+      rawEasy = this.extractTierValues(obj, 'easy');
+
+      // Fallback: flat 6-item list under `clues` or across object values
+      if (
+        !rawHard ||
+        rawHard.length < 2 ||
+        !rawMedium ||
+        rawMedium.length < 2 ||
+        !rawEasy ||
+        rawEasy.length < 2
+      ) {
+        const flatList: string[] = [];
+        const cluesField = obj.clues;
+        if (Array.isArray(cluesField)) {
+          for (const item of cluesField) {
+            const s = this.extractClueString(item);
+            if (s) flatList.push(s);
+          }
+        } else {
+          for (const val of Object.values(obj)) {
+            if (Array.isArray(val)) {
+              for (const item of val) {
+                const s = this.extractClueString(item);
+                if (s) flatList.push(s);
+              }
+            } else {
+              const s = this.extractClueString(val);
+              if (s) flatList.push(s);
+            }
+          }
+        }
+        if (flatList.length >= 6) {
+          rawHard = flatList.slice(0, 2);
+          rawMedium = flatList.slice(2, 4);
+          rawEasy = flatList.slice(4, 6);
+        }
+      }
+    }
+
+    const hard = this.normalizePair(rawHard, 'hard', forbiddenTitles, lang);
     const medium = this.normalizePair(
-      obj.medium,
+      rawMedium,
       'medium',
       forbiddenTitles,
       lang,
     );
-    const easy = this.normalizePair(obj.easy, 'easy', forbiddenTitles, lang);
+    const easy = this.normalizePair(rawEasy, 'easy', forbiddenTitles, lang);
 
     const allClues = [...hard, ...medium, ...easy];
 
@@ -620,12 +747,12 @@ export class AiClueService implements OnModuleInit {
     }
 
     const first = this.replaceForbiddenTitlesNaturally(
-      cleanScrapedText(String(value[0] ?? ''), 500),
+      cleanScrapedText(this.extractClueString(value[0]), 500),
       forbiddenTitles,
       lang,
     );
     const second = this.replaceForbiddenTitlesNaturally(
-      cleanScrapedText(String(value[1] ?? ''), 500),
+      cleanScrapedText(this.extractClueString(value[1]), 500),
       forbiddenTitles,
       lang,
     );
