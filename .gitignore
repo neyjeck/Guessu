@@ -34,6 +34,7 @@ ENV/
 
 # Data dumps (raw)
 data/raw_*
+data/anime-offline-database-minified.json
 
 # Obsidian local configuration
 docs/.obsidian/
