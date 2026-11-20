@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Award,
@@ -17,7 +17,7 @@ import {
   AnimeSearchResultItem,
 } from '../components/AnimeAutocompleteInput';
 import { useAuth } from '../context/AuthContext';
-import { useLanguage } from '../context/LanguageContext';
+import { AppLanguage, useLanguage } from '../context/LanguageContext';
 
 export type ClueDifficulty = 'HARD' | 'MEDIUM' | 'EASY';
 export type RoundStatus = 'IN_PROGRESS' | 'WON' | 'LOST';
@@ -42,18 +42,19 @@ export interface UserGameStats {
 
 export interface RevealedAnimeAnswer {
   id: string;
-  anilistId: number;
+  anilistId: number | null;
   titleEn: string | null;
-  titleRomaji: string;
+  titleRomaji: string | null;
   titleJa: string | null;
   titleUk: string | null;
   titleRu: string | null;
   synonyms: string[];
-  coverUrl: string;
+  coverUrl: string | null;
 }
 
 export interface SoloGameResponse {
   status: RoundStatus;
+  lang?: AppLanguage;
   unlockedStep: number;
   maxSteps: number;
   unlockedClues: GameClueItem[];
@@ -79,6 +80,7 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
   const [isStarting, setIsStarting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const lastStartedLangRef = useRef<AppLanguage | null>(null);
 
   const syncUserStats = useCallback(
     (data: SoloGameResponse) => {
@@ -90,33 +92,51 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
     [onStatsUpdate, refreshProfile],
   );
 
-  const handleStartRound = useCallback(async () => {
-    setIsStarting(true);
-    setErrorMessage(null);
-    setSelectedAnime(null);
-    setAutocompleteKey((prev) => prev + 1);
+  const handleStartRound = useCallback(
+    async (explicitLang?: AppLanguage) => {
+      const activeLang: AppLanguage = explicitLang ?? lang;
+      lastStartedLangRef.current = activeLang;
+      setIsStarting(true);
+      setErrorMessage(null);
+      setSelectedAnime(null);
+      setAutocompleteKey((prev) => prev + 1);
 
-    try {
-      const response = await apiClient.post<SoloGameResponse>('/game/start', {
-        lang,
-      });
-      setGameState(response.data);
-      syncUserStats(response.data);
-    } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { message?: string } } })?.response?.data
-          ?.message ?? 'Failed to start round. Please try again.';
-      setErrorMessage(Array.isArray(msg) ? msg.join(', ') : String(msg));
-    } finally {
-      setIsStarting(false);
-    }
-  }, [lang, syncUserStats]);
+      try {
+        const response = await apiClient.post<SoloGameResponse>('/game/start', {
+          lang: activeLang,
+        });
+        setGameState(response.data);
+        syncUserStats(response.data);
+      } catch (err: unknown) {
+        const msg =
+          (err as { response?: { data?: { message?: string } } })?.response
+            ?.data?.message ?? 'Failed to start round. Please try again.';
+        setErrorMessage(Array.isArray(msg) ? msg.join(', ') : String(msg));
+      } finally {
+        setIsStarting(false);
+      }
+    },
+    [lang, syncUserStats],
+  );
 
-  // Automatically start the first round on mount
+  // Automatically start the first round on mount using the active UI language
   useEffect(() => {
-    void handleStartRound();
+    void handleStartRound(lang);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // If the user switches UI language before submitting any guess on Step 1, immediately sync clues
+  useEffect(() => {
+    if (
+      lastStartedLangRef.current !== null &&
+      lastStartedLangRef.current !== lang &&
+      gameState?.status === 'IN_PROGRESS' &&
+      gameState.unlockedStep === 1 &&
+      gameState.guesses.length === 0
+    ) {
+      void handleStartRound(lang);
+    }
+  }, [lang, gameState, handleStartRound]);
 
   const handleGuessSubmit = async () => {
     if (!selectedAnime || isSubmitting) return;
@@ -206,7 +226,7 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
           <button
             type="button"
             className="auth-submit-btn"
-            onClick={() => void handleStartRound()}
+            onClick={() => void handleStartRound(lang)}
           >
             <Play size={16} /> {t.startRoundBtn}
           </button>
@@ -260,11 +280,17 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
 
                 {selectedAnime && (
                   <div className="selected-anime-preview">
-                    <img
-                      src={selectedAnime.coverUrl}
-                      alt={selectedAnime.titleEn ?? selectedAnime.titleRomaji}
-                      className="selected-anime-cover"
-                    />
+                    {selectedAnime.coverUrl && (
+                      <img
+                        src={selectedAnime.coverUrl}
+                        alt={
+                          selectedAnime.titleEn ??
+                          selectedAnime.titleRomaji ??
+                          'Anime cover'
+                        }
+                        className="selected-anime-cover"
+                      />
+                    )}
                     <div className="selected-anime-info">
                       <span className="selected-anime-caption">
                         {t.selectedAnimeLabel}
@@ -273,11 +299,14 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
                         {(lang === 'uk' && selectedAnime.titleUk) ||
                           (lang === 'ru' && selectedAnime.titleRu) ||
                           selectedAnime.titleEn ||
-                          selectedAnime.titleRomaji}
+                          selectedAnime.titleRomaji ||
+                          'Unknown'}
                       </strong>
-                      <span className="selected-anime-sub">
-                        {selectedAnime.titleRomaji}
-                      </span>
+                      {selectedAnime.titleRomaji && (
+                        <span className="selected-anime-sub">
+                          {selectedAnime.titleRomaji}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -356,26 +385,32 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
 
                 {gameState.answer && (
                   <div className="revealed-anime-card">
-                    <img
-                      src={gameState.answer.coverUrl}
-                      alt={
-                        gameState.answer.titleEn ??
-                        gameState.answer.titleRomaji
-                      }
-                      className="revealed-anime-cover"
-                    />
+                    {gameState.answer.coverUrl && (
+                      <img
+                        src={gameState.answer.coverUrl}
+                        alt={
+                          gameState.answer.titleEn ??
+                          gameState.answer.titleRomaji ??
+                          'Anime cover'
+                        }
+                        className="revealed-anime-cover"
+                      />
+                    )}
                     <div className="revealed-anime-details">
                       <h4 className="revealed-primary-title">
                         {(lang === 'uk' && gameState.answer.titleUk) ||
                           (lang === 'ru' && gameState.answer.titleRu) ||
                           gameState.answer.titleEn ||
-                          gameState.answer.titleRomaji}
+                          gameState.answer.titleRomaji ||
+                          'Unknown'}
                       </h4>
                       <div className="revealed-localized-list">
-                        <span>
-                          <strong>Romaji:</strong>{' '}
-                          {gameState.answer.titleRomaji}
-                        </span>
+                        {gameState.answer.titleRomaji && (
+                          <span>
+                            <strong>Romaji:</strong>{' '}
+                            {gameState.answer.titleRomaji}
+                          </span>
+                        )}
                         {gameState.answer.titleEn && (
                           <span>
                             <strong>EN:</strong> {gameState.answer.titleEn}
@@ -427,7 +462,7 @@ export function SoloGameTest({ onStatsUpdate }: SoloGameTestProps) {
                 <button
                   type="button"
                   className="next-anime-btn"
-                  onClick={() => void handleStartRound()}
+                  onClick={() => void handleStartRound(lang)}
                 >
                   <span>{t.nextAnimeBtn}</span>
                   <ArrowRight size={18} />

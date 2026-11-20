@@ -49,9 +49,10 @@ async function main(): Promise<void> {
         titleUk: item.titleUk ?? null,
         titleRu: item.titleRu ?? null,
         synonyms: item.synonyms ?? [],
-        coverUrl: item.coverUrl,
+        coverUrl: item.coverUrl ?? null,
         screenshots: item.screenshots ?? [],
         dossier: item.dossier,
+        isEnriched: true,
       },
       create: {
         anilistId: item.anilistId,
@@ -62,9 +63,10 @@ async function main(): Promise<void> {
         titleUk: item.titleUk ?? null,
         titleRu: item.titleRu ?? null,
         synonyms: item.synonyms ?? [],
-        coverUrl: item.coverUrl,
+        coverUrl: item.coverUrl ?? null,
         screenshots: item.screenshots ?? [],
         dossier: item.dossier,
+        isEnriched: true,
       },
     });
     upserted += 1;

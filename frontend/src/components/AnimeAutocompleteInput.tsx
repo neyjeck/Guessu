@@ -5,14 +5,16 @@ import { AppLanguage, useLanguage } from '../context/LanguageContext';
 
 export interface AnimeSearchResultItem {
   id: number;
-  anilistId: number;
+  anilistId: number | null;
   titleEn: string | null;
-  titleRomaji: string;
+  titleRomaji: string | null;
   titleJa: string | null;
   titleUk: string | null;
   titleRu: string | null;
   synonyms?: string[];
-  coverUrl: string;
+  coverUrl: string | null;
+  type?: string | null;
+  year?: number | null;
 }
 
 interface AnimeAutocompleteInputProps {
@@ -72,7 +74,7 @@ function resolveDisplayTitles(
     .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     .map((v) => v.trim());
 
-  const primary = orderedCandidates[0] ?? item.titleRomaji;
+  const primary = orderedCandidates[0] ?? item.titleRomaji ?? item.titleEn ?? 'Unknown';
 
   const allDistinct = Array.from(
     new Set([
@@ -142,7 +144,7 @@ export function AnimeAutocompleteInput({
         const response = await apiClient.get<AnimeSearchResultItem[]>(
           '/anime/search',
           {
-            params: { q: trimmed, limit: 10 },
+            params: { q: trimmed, limit: 15 },
             signal: abortController.signal,
           },
         );
@@ -288,12 +290,14 @@ export function AnimeAutocompleteInput({
                         handleSelect(item);
                       }}
                     >
-                      <img
-                        src={item.coverUrl}
-                        alt={primary}
-                        className="autocomplete-cover"
-                        loading="lazy"
-                      />
+                      {item.coverUrl && (
+                        <img
+                          src={item.coverUrl}
+                          alt={primary}
+                          className="autocomplete-cover"
+                          loading="lazy"
+                        />
+                      )}
                       <div className="autocomplete-titles">
                         <div className="autocomplete-primary-title">
                           {renderHighlightedText(primary, query)}

@@ -10,6 +10,7 @@ import {
   GeneratedClueSet,
   SupportedLanguage,
 } from '../ai/ai-clue.service';
+import { AnimeEnrichmentService } from '../anime/anime-enrichment.service';
 import { AnimeService } from '../anime/anime.service';
 import { RedisService } from '../redis/redis.service';
 import { UsersService } from '../users/users.service';
@@ -39,14 +40,14 @@ export interface UserGameStats {
 
 export interface RevealedAnimeAnswer {
   id: string;
-  anilistId: number;
+  anilistId: number | null;
   titleEn: string | null;
-  titleRomaji: string;
+  titleRomaji: string | null;
   titleJa: string | null;
   titleUk: string | null;
   titleRu: string | null;
   synonyms: string[];
-  coverUrl: string;
+  coverUrl: string | null;
 }
 
 export interface RedisSoloGameState {
@@ -62,6 +63,7 @@ export interface RedisSoloGameState {
 
 export interface SoloGameResponse {
   status: RoundStatus;
+  lang: SupportedLanguage;
   unlockedStep: number;
   maxSteps: number;
   unlockedClues: GameClueItem[];
@@ -83,19 +85,31 @@ export class GameService {
   private readonly logger = new Logger(GameService.name);
   private static readonly MAX_STEPS = 6;
   private static readonly SOLO_SESSION_TTL_SECONDS = 2 * 60 * 60; // 2 hours
-  private static readonly RECENT_HISTORY_LIMIT = 15;
+  private static readonly RECENT_HISTORY_LIMIT = 30;
 
   constructor(
     private readonly usersService: UsersService,
     private readonly animeService: AnimeService,
+    private readonly animeEnrichmentService: AnimeEnrichmentService,
     private readonly aiClueService: AiClueService,
     private readonly redisService: RedisService,
   ) {}
 
   /**
+   * Alias for `startSoloRound` so both callers and internal references resolve consistently.
+   */
+  async startRound(
+    userId: string,
+    dto: StartGameDto,
+  ): Promise<SoloGameResponse> {
+    return this.startSoloRound(userId, dto);
+  }
+
+  /**
    * Starts a new solo anime-guessing round for the authenticated user.
-   * Stores active state in Redis (`game:solo:<userId>`, TTL 2 hours) and returns
-   * ONLY Clue #1, userStats, and round metadata (zero answer leakage).
+   * Ensures the chosen anime is lazily enriched via AniList/Wikipedia/Fandom before
+   * generating 6 clues in the requested language, stores state in Redis (`game:solo:<userId>`,
+   * TTL 2h, 30-item recent history), and returns ONLY Clue #1 (zero answer leakage).
    */
   async startSoloRound(
     userId: string,
@@ -119,11 +133,14 @@ export class GameService {
       clues = buffered.clues;
     } else {
       const randomAnime = await this.animeService.getRandomAnime(prevRecentIds);
+      const enrichedAnime = await this.animeEnrichmentService.ensureEnriched(
+        String(randomAnime.id),
+      );
       const generated = await this.aiClueService.generateClues(
-        randomAnime,
+        enrichedAnime,
         lang,
       );
-      targetAnimeId = String(randomAnime.id);
+      targetAnimeId = String(enrichedAnime.id);
       clues = this.formatClueItems(generated);
     }
 
@@ -150,6 +167,7 @@ export class GameService {
 
     return {
       status: 'IN_PROGRESS',
+      lang,
       unlockedStep: 1,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: newState.clues.slice(0, 1),
@@ -231,6 +249,7 @@ export class GameService {
 
       return {
         status: 'WON',
+        lang: state.lang,
         unlockedStep: state.unlockedStep,
         maxSteps: GameService.MAX_STEPS,
         unlockedClues: state.clues.slice(0, state.unlockedStep),
@@ -254,6 +273,7 @@ export class GameService {
 
       return {
         status: 'IN_PROGRESS',
+        lang: state.lang,
         unlockedStep: state.unlockedStep,
         maxSteps: GameService.MAX_STEPS,
         unlockedClues: state.clues.slice(0, state.unlockedStep),
@@ -279,6 +299,7 @@ export class GameService {
 
     return {
       status: 'LOST',
+      lang: state.lang,
       unlockedStep: state.unlockedStep,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: state.clues,
@@ -321,6 +342,7 @@ export class GameService {
 
     return {
       status: 'LOST',
+      lang: state.lang,
       unlockedStep: state.unlockedStep,
       maxSteps: GameService.MAX_STEPS,
       unlockedClues: state.clues,
@@ -402,6 +424,7 @@ export class GameService {
       const parsed = JSON.parse(raw) as BufferedRoundPayload;
       if (
         parsed?.targetAnimeId &&
+        parsed.lang === lang &&
         Array.isArray(parsed.clues) &&
         parsed.clues.length === 6 &&
         !recentIds.includes(parsed.targetAnimeId)
@@ -421,9 +444,15 @@ export class GameService {
   ): Promise<void> {
     try {
       const nextAnime: Anime = await this.animeService.getRandomAnime(recentIds);
-      const generated = await this.aiClueService.generateClues(nextAnime, lang);
+      const enrichedAnime = await this.animeEnrichmentService.ensureEnriched(
+        String(nextAnime.id),
+      );
+      const generated = await this.aiClueService.generateClues(
+        enrichedAnime,
+        lang,
+      );
       const payload: BufferedRoundPayload = {
-        targetAnimeId: String(nextAnime.id),
+        targetAnimeId: String(enrichedAnime.id),
         lang,
         clues: this.formatClueItems(generated),
       };
@@ -453,7 +482,7 @@ export class GameService {
       const anime = await this.animeService.findPublicById(numericId);
       if (lang === 'uk' && anime.titleUk) return anime.titleUk;
       if (lang === 'ru' && anime.titleRu) return anime.titleRu;
-      return anime.titleEn ?? anime.titleRomaji;
+      return anime.titleEn ?? anime.titleRomaji ?? `Anime #${animeId}`;
     } catch {
       return `Anime #${animeId}`;
     }

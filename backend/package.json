@@ -19,7 +19,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "catalog:import": "python3 ../scripts/import_full_catalog.py"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

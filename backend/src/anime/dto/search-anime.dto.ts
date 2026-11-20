@@ -13,6 +13,6 @@ export class SearchAnimeDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(20)
-  limit?: number = 10;
+  @Max(25)
+  limit?: number = 15;
 }

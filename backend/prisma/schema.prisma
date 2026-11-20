@@ -45,17 +45,21 @@ model User {
 
 model Anime {
   id           Int           @id @default(autoincrement())
-  anilistId    Int           @unique
+  anilistId    Int?          @unique
   malId        Int?          @unique
   titleEn      String?
-  titleRomaji  String
+  titleRomaji  String?
   titleJa      String?
   titleUk      String?
   titleRu      String?
   synonyms     String[]      @default([])
-  coverUrl     String
+  coverUrl     String?
+  type         String?
+  year         Int?
+  tags         String[]      @default([])
   screenshots  String[]      @default([])
-  dossier      Json
+  dossier      Json?
+  isEnriched   Boolean       @default(false)
   gameSessions GameSession[]
 }
 
